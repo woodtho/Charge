@@ -163,10 +163,6 @@ const isCanonicalRoom = (room: string): room is (typeof canonicalRooms)[number] 
   return canonicalRooms.includes(room as (typeof canonicalRooms)[number]);
 };
 
-const isCanonicalRoom = (room: string): room is (typeof canonicalRooms)[number] => {
-  return canonicalRooms.includes(room as (typeof canonicalRooms)[number]);
-};
-
 const formatCompactTimeInput = (value: string): string | null => {
   const trimmed = value.trim();
   if (!/^\d{3,4}$/.test(trimmed)) return null;
