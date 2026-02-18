@@ -28,6 +28,7 @@ type DischargeEvent = {
   room: string;
   label: string;
   timestamp: number;
+  tags: string[];
 };
 
 type SerializedRoomAssignmentRow = Omit<RoomAssignmentRow, 'time'> & {
@@ -167,6 +168,17 @@ const badgeClassForRoom = (room: RoomAssignmentRow) => {
   if (room.under_24 === 'Y') return 'pill-under';
   if (room.over_24 === 'Y') return 'pill-over';
   return '';
+};
+
+const formatRelativeTime = (timestamp: number, now: number) => {
+  const diff = Math.max(0, now - timestamp);
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 };
 
 const triggerDownload = (filename: string, contents: string, mime = 'text/plain') => {
@@ -310,6 +322,9 @@ function App() {
   const [nurseServedCounts, setNurseServedCounts] = useState<number[]>([]);
   const [collapsedSections, setCollapsedSections] = useState<Record<SectionKey, boolean>>(defaultCollapsedState);
   const [servedByRoom, setServedByRoom] = useState<RoomServeHistory>({});
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [dischargeFilter, setDischargeFilter] = useState('');
+  const [relativeClock, setRelativeClock] = useState(Date.now());
   const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
   const toggleSection = (key: SectionKey) => {
     setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -364,7 +379,12 @@ function App() {
         setLastSavedTs(parsed.lastSaved);
       }
       if (Array.isArray(parsed.dischargeHistory)) {
-        setDischargeHistory(parsed.dischargeHistory);
+        setDischargeHistory(
+          parsed.dischargeHistory.map((event) => ({
+            ...event,
+            tags: Array.isArray((event as DischargeEvent).tags) ? (event as DischargeEvent).tags : [],
+          })),
+        );
       }
       if (Array.isArray(parsed.servedCounts)) {
         setNurseServedCounts(parsed.servedCounts);
@@ -447,6 +467,59 @@ function App() {
     if (!assignmentSnapshot) return new Set<string>();
     return new Set(assignmentSnapshot.perRoom.map((room) => room.room));
   }, [assignmentSnapshot]);
+  const dischargeSummary = useMemo(() => {
+    const map = new Map<number, number>();
+    dischargeHistory.forEach((event) => {
+      if (event.nurseId) {
+        map.set(event.nurseId, (map.get(event.nurseId) ?? 0) + 1);
+      }
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([nurseId, count]) => ({ nurseId, count }));
+  }, [dischargeHistory]);
+  const filteredDischargeHistory = useMemo(() => {
+    const query = dischargeFilter.trim().toLowerCase();
+    const base = query
+      ? dischargeHistory.filter((event) => {
+          const haystack = [
+            event.room,
+            event.label,
+            event.tags.join(' '),
+            event.nurseId ? `nurse ${event.nurseId}` : '',
+          ]
+            .join(' ')
+            .toLowerCase();
+          return haystack.includes(query);
+        })
+      : dischargeHistory;
+    return base.slice(0, 25);
+  }, [dischargeHistory, dischargeFilter]);
+  const selectedRoom = useMemo(() => {
+    if (!selectedRoomId || !assignmentSnapshot) return null;
+    return assignmentSnapshot.perRoom.find((room) => room.room === selectedRoomId) ?? null;
+  }, [selectedRoomId, assignmentSnapshot]);
+
+  useEffect(() => {
+    if (selectedRoomId && !selectedRoom) {
+      setSelectedRoomId(null);
+    }
+  }, [selectedRoomId, selectedRoom]);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSelectedRoomId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setRelativeClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const cautionByRow = useMemo(() => {
     const map = new Map<number, string>();
@@ -521,6 +594,28 @@ function App() {
     setServedByRoom(merged.updatedServedByRoom);
   };
 
+  const reassignRoom = (roomId: string | null, nurseId: number) => {
+    if (!roomId || nurseId <= 0) return false;
+    let changed = false;
+    setAssignmentSnapshot((prev) => {
+      if (!prev) return prev;
+      const target = prev.perRoom.find((room) => room.room === roomId);
+      if (!target || target.nurse_id === nurseId) return prev;
+      changed = true;
+      const perRoom = prev.perRoom.map((room) =>
+        room.room === roomId ? { ...room, nurse_id: nurseId } : room,
+      );
+      return {
+        perRoom,
+        perNurse: buildNurseSummary(perRoom, nNurses, timezone),
+      };
+    });
+    if (changed) {
+      creditRoomForNurse(roomId, nurseId);
+    }
+    return changed;
+  };
+
   const handleDragStart = (roomId: string) => {
     setDraggingRoomId(roomId);
   };
@@ -529,27 +624,13 @@ function App() {
 
   const handleDropOnNurse = (nurseId: number) => {
     if (!draggingRoomId) return;
-    let updated = false;
-    let movedRoom: string | null = null;
-    setAssignmentSnapshot((prev) => {
-      if (!prev) return prev;
-      const target = prev.perRoom.find((room) => room.room === draggingRoomId);
-      if (!target || target.nurse_id === nurseId) return prev;
-      updated = true;
-      movedRoom = target.room;
-      const perRoom = prev.perRoom.map((room) =>
-        room.room === draggingRoomId ? { ...room, nurse_id: nurseId } : room,
-      );
-      return {
-        perRoom,
-        perNurse: buildNurseSummary(perRoom, nNurses, timezone),
-      };
-    });
+    reassignRoom(draggingRoomId, nurseId);
     setDraggingRoomId(null);
-    if (updated && movedRoom) {
-      creditRoomForNurse(movedRoom, nurseId);
-    }
   };
+  const openRoomDetail = (roomId: string) => {
+    setSelectedRoomId(roomId);
+  };
+  const closeRoomDetail = () => setSelectedRoomId(null);
 
   const summaryStats = useMemo(
     () => [
@@ -675,6 +756,9 @@ function App() {
     if (roomId && assignmentSnapshot) {
       const entry = assignmentSnapshot.perRoom.find((room) => room.room === roomId);
       if (entry) {
+        const tagLabels = labelColumns
+          .filter((col) => entry[col.key] === 'Y')
+          .map((col) => col.label);
         setDischargeHistory((prev) => [
           {
             id: `${roomId}-${Date.now()}`,
@@ -682,6 +766,7 @@ function App() {
             room: entry.room,
             label: buildRoomLabel(entry, timezone),
             timestamp: Date.now(),
+            tags: tagLabels,
           },
           ...prev,
         ].slice(0, 50));
@@ -862,19 +947,28 @@ function App() {
                     </p>
                     <div className="assigned-list">
                       {roomsForNurse.length > 0 ? (
-                        roomsForNurse.map((room) => (
-                          <span
-                            key={`${row.nurse_id}-${room.room}-${room.rank_oldest}`}
-                            className={`tag-pill draggable ${draggingRoomId === room.room ? 'dragging' : ''}`}
-                            data-color={badgeClassForRoom(room)}
-                            draggable
-                            data-tooltip={describeRoom(room, timezone)}
-                            onDragStart={() => handleDragStart(room.room)}
-                            onDragEnd={handleDragEnd}
-                          >
-                            {room.room} ({formatClock(room.time, timezone)})
-                          </span>
-                        ))
+                      roomsForNurse.map((room) => (
+                        <span
+                          key={`${row.nurse_id}-${room.room}-${room.rank_oldest}`}
+                          className={`tag-pill draggable ${draggingRoomId === room.room ? 'dragging' : ''}`}
+                          data-color={badgeClassForRoom(room)}
+                          draggable
+                          data-tooltip={describeRoom(room, timezone)}
+                          onDragStart={() => handleDragStart(room.room)}
+                          onDragEnd={handleDragEnd}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openRoomDetail(room.room)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              openRoomDetail(room.room);
+                            }
+                          }}
+                        >
+                          {room.room} ({formatClock(room.time, timezone)})
+                        </span>
+                      ))
                       ) : (
                         <span className="muted">No rooms assigned</span>
                       )}
@@ -1080,14 +1174,60 @@ function App() {
             className={`panel-content ${isSectionCollapsed('dischargeLog') ? 'collapsed' : ''}`}
             aria-hidden={isSectionCollapsed('dischargeLog')}
           >
-            <ul className="discharge-log">
-              {dischargeHistory.slice(0, 10).map((event) => (
-                <li key={event.id}>
-                  <span className="log-room">{event.label}</span>
-                  <span className="log-time">{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="discharge-tools">
+              <div className="discharge-summary">
+                {dischargeSummary.length === 0 ? (
+                  <span className="muted">No nurse discharges yet.</span>
+                ) : (
+                  dischargeSummary.map((item) => (
+                    <span key={`discharge-pill-${item.nurseId}`} className="count-pill">
+                      Nurse {item.nurseId}: {item.count}
+                    </span>
+                  ))
+                )}
+              </div>
+              <label className="filter-field">
+                <span>Filter log</span>
+                <input
+                  type="text"
+                  placeholder="Search room, nurse, or tag"
+                  value={dischargeFilter}
+                  onChange={(e) => setDischargeFilter(e.target.value)}
+                />
+              </label>
+            </div>
+            {filteredDischargeHistory.length > 0 ? (
+              <div className="table-scroll discharge-scroll">
+                <table className="data-table discharge-table">
+                  <thead>
+                    <tr>
+                      <th>Room</th>
+                      <th>Nurse</th>
+                      <th>Discharged at</th>
+                      <th>Elapsed</th>
+                      <th>Tags</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDischargeHistory.map((event) => (
+                      <tr key={event.id}>
+                        <td data-label="Room">{event.room}</td>
+                        <td data-label="Nurse">{event.nurseId ? `Nurse ${event.nurseId}` : '—'}</td>
+                        <td data-label="Discharged at">
+                          {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td data-label="Elapsed">{formatRelativeTime(event.timestamp, relativeClock)}</td>
+                        <td data-label="Tags">
+                          {event.tags.length > 0 ? event.tags.join(', ') : 'No tags'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">No discharges match “{dischargeFilter}”.</p>
+            )}
           </div>
         </section>
       )}
@@ -1227,6 +1367,59 @@ function App() {
           </div>
         </div>
       </section>
+
+      {selectedRoom && (
+        <div className="room-detail-overlay" role="dialog" aria-modal="true" aria-labelledby="room-detail-title">
+          <div className="room-detail-backdrop" onClick={closeRoomDetail} />
+          <div className="room-detail-card">
+            <header className="room-detail-head">
+              <div>
+                <p className="room-detail-label">Room detail</p>
+                <h3 id="room-detail-title">Room {selectedRoom.room}</h3>
+              </div>
+              <button type="button" className="icon-button" onClick={closeRoomDetail} aria-label="Close room details">
+                ✕
+              </button>
+            </header>
+            <p className="room-detail-meta">
+              Assigned to <strong>Nurse {selectedRoom.nurse_id}</strong> &nbsp;•&nbsp; {formatClock(selectedRoom.time, timezone)}
+            </p>
+            <div className="room-detail-tags">
+              {labelColumns
+                .filter((col) => selectedRoom[col.key] === 'Y')
+                .map((col) => (
+                  <span key={`detail-${selectedRoom.room}-${col.key}`} className="detail-tag">
+                    {col.label}
+                  </span>
+                ))}
+              {labelColumns.every((col) => selectedRoom[col.key] !== 'Y') && <span className="detail-tag muted">No special tags</span>}
+            </div>
+            <div className="room-detail-assign">
+              <p>Move to another nurse:</p>
+              <div className="assign-grid">
+                {Array.from({ length: nNurses }, (_, idx) => {
+                  const nurseId = idx + 1;
+                  const isActive = nurseId === selectedRoom.nurse_id;
+                  return (
+                    <button
+                      key={`assign-${selectedRoom.room}-${nurseId}`}
+                      type="button"
+                      className={`assign-pill ${isActive ? 'active' : ''}`}
+                      disabled={isActive}
+                      onClick={() => {
+                        reassignRoom(selectedRoom.room, nurseId);
+                        setSelectedRoomId(selectedRoom.room);
+                      }}
+                    >
+                      Nurse {nurseId}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
