@@ -1,73 +1,26 @@
-# React + TypeScript + Vite
+# Charge App
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A React + TypeScript rewrite of the nurse room-assignment workflow described in `agents.md`. The UI mirrors the original Shiny prototype while adding persistence, drag-and-drop tweaks, historical discharge tracking, and deterministic allocation powered by the pure engine in `src/utils/assignment.ts`.
 
-Currently, two official plugins are available:
+## Local development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. Install dependencies once: `npm install`
+2. Start the dev server: `npm run dev`
+3. Run unit tests (engine + UI): `npm test`
+4. Create a production build locally: `npm run build`
 
-## React Compiler
+## Deployment (GitHub Pages)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+This repository now includes `.github/workflows/deploy.yml`, which builds the site with Vite and publishes the `dist/` output to GitHub Pages whenever `main` receives a push. To publish:
 
-## Expanding the ESLint configuration
+1. Push this repository to GitHub and open *Settings → Pages*.
+2. Set the source to **GitHub Actions** (the workflow handles the rest).
+3. Ensure the default branch is `main`. Manual runs are possible through the *Actions → Deploy site to GitHub Pages* workflow using the **Run workflow** button.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### Base path handling
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- Local development continues to use the default `/` base path.
+- The workflow exports `VITE_BASE_PATH=/<repository-name>/` before running `npm run build`, which matches the default project-site URL pattern `https://<user>.github.io/<repository-name>/`.
+- If you host the app at `https://<user>.github.io/` (user/organization site) or behind a custom domain, override the environment variable from the workflow dispatch form or by editing the workflow to set `VITE_BASE_PATH=/` (or another path that matches your final URL).
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Once the workflow finishes, the deployment URL appears in the *Environments → github-pages* tab and on the run summary page.
