@@ -328,7 +328,11 @@ function App() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [dischargeFilter, setDischargeFilter] = useState('');
   const [relativeClock, setRelativeClock] = useState(Date.now());
-  const [theme, setTheme] = useState<ThemeMode>('light');
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    if (typeof document === 'undefined') return 'dark';
+    const attr = document.documentElement?.dataset.theme;
+    return attr === 'dark' || attr === 'light' ? (attr as ThemeMode) : 'dark';
+  });
   const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
   const toggleSection = (key: SectionKey) => {
     setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -530,7 +534,14 @@ function App() {
   }, []);
 
   useEffect(() => {
-    document.body.dataset.theme = theme;
+    if (typeof document === 'undefined') return;
+    const docEl = document.documentElement;
+    if (docEl) {
+      docEl.dataset.theme = theme;
+    }
+    if (document.body) {
+      document.body.dataset.theme = theme;
+    }
   }, [theme]);
 
   const toggleTheme = () => {
@@ -872,7 +883,7 @@ function App() {
       <header className="app-header">
         <div>
           <h1>Room-to-Nurse Assignment</h1>
-          <p className="subtitle">Primary outputs first, responsive editing always available.</p>
+          <p className="subtitle">Operational console for equitable coverage and bedside continuity.</p>
         </div>
         <div className="header-actions">
           <button type="button" className="ghost-button theme-toggle" onClick={toggleTheme}>
@@ -882,12 +893,16 @@ function App() {
           <span className="persist-meta">{savedLabel}</span>
         </div>
       </header>
+      <div className="info-banner">
+        <strong>Quick guide</strong>
+        <p>Document every occupied room exactly once, wait for the status banner to read <em>Validation ready</em>, then run <em>Assign rooms</em>. Hover or tap any room pill to read the tags, drag to rebalance when needed, and rely on the discharge log for audit history.</p>
+      </div>
 
       <section className="panel highlight collapsible">
         <div className="panel-head">
           <div>
             <h2>Rooms by nurse</h2>
-            <p>Deterministic, fair distribution across {nNurses} nurse(s).</p>
+            <p className="panel-subtext">Fair-load assignment honors discharge, acuity, and adjacency rules without reshuffling earlier decisions.</p>
           </div>
           <button
             type="button"
@@ -914,6 +929,7 @@ function App() {
               </div>
             ))}
           </div>
+          <p className="help-text">Hover or tap room pills for patient context. Drag-and-drop or use the detail drawer to rebalance without losing fairness history.</p>
           <div className="assign-actions">
             <button
               type="button"
@@ -923,10 +939,10 @@ function App() {
               Assign rooms
             </button>
             {!pendingAssignment && (
-              <span className="assign-hint">Enter valid rooms to enable assignments.</span>
+              <span className="assign-hint">Enter at least one validated room with a timestamp to enable the assignment engine.</span>
             )}
             {pendingAssignment && !hasPendingChanges && activeAssignments && (
-              <span className="assign-hint">Assignments are up to date.</span>
+              <span className="assign-hint">Assignments already reflect the latest census entries.</span>
             )}
           </div>
           {activeAssignments && (
@@ -1040,7 +1056,7 @@ function App() {
               })}
             </div>
           ) : (
-            <p className="muted">Enter rooms and select “Assign rooms” to generate the distribution.</p>
+            <p className="muted">Enter at least one validated room and select “Assign rooms” to generate the distribution.</p>
           )}
         </div>
       </section>
@@ -1049,6 +1065,7 @@ function App() {
         <section className="panel collapsible">
           <div className="panel-head">
             <h2>Per-room assignments</h2>
+            <p className="panel-subtext">Use this table to audit every placement, confirm timestamps, and spot tag concentrations.</p>
             <button
               type="button"
               className="collapse-toggle"
@@ -1097,13 +1114,17 @@ function App() {
                 </tbody>
               </table>
             </div>
+            <p className="help-text">Use this detail view for audits, disputes, or handoff notes. Export to CSV whenever leadership requests a snapshot.</p>
           </div>
         </section>
       )}
 
       <section className="panel controls-panel collapsible">
         <div className="panel-head">
-          <h2>Controls & data entry</h2>
+          <div>
+            <h2>Controls & data entry</h2>
+            <p className="panel-subtext">Set staffing context first; all entries autosave locally for reliable recoveries.</p>
+          </div>
           <button
             type="button"
             className="collapse-toggle"
@@ -1141,21 +1162,21 @@ function App() {
             </label>
           </div>
           <div className="button-row">
-            <button type="button" onClick={addRow}>Add row</button>
-            <button type="button" onClick={clearTable} className="secondary">Clear table</button>
-            <button type="button" onClick={loadTestData} className="ghost-button">Load test data</button>
+            <button type="button" onClick={addRow}>Add patient row</button>
+            <button type="button" onClick={clearTable} className="secondary">Clear all rows</button>
+            <button type="button" onClick={loadTestData} className="ghost-button">Insert sample census</button>
           </div>
-          <p className="help-text">Time format: HH:MM (24-hour). Tags are not mutually exclusive, but avoid flagging both under_24 and over_24.</p>
+          <p className="help-text">Keep exactly one entry per occupied room. Capture HH:MM based on the configured timezone and tag only one of the under/over 24h options.</p>
         <div
           className={`validation ${validationMessages.length === 0 ? 'ok' : 'error'}`}
           role="status"
           aria-live="polite"
         >
           {validationMessages.length === 0 ? (
-            <span>Validation: OK</span>
+            <span>Validation ready: all blocking checks have passed.</span>
           ) : (
             <div>
-              <strong>Validation issues:</strong>
+              <strong>Please resolve these blocking items:</strong>
               <ul>
                 {validationMessages.map((msg) => (
                   <li key={msg}>{msg}</li>
@@ -1179,7 +1200,10 @@ function App() {
       {dischargeHistory.length > 0 && (
         <section className="panel collapsible">
           <div className="panel-head">
-            <h2>Discharge log</h2>
+            <div>
+              <h2>Discharge log</h2>
+              <p className="panel-subtext">Full audit trail of rooms that left this shift. Reference it when balancing future arrivals.</p>
+            </div>
             <button
               type="button"
               className="collapse-toggle"
@@ -1199,7 +1223,7 @@ function App() {
             <div className="discharge-tools">
               <div className="discharge-summary">
                 {dischargeSummary.length === 0 ? (
-                  <span className="muted">No nurse discharges yet.</span>
+                  <span className="muted">No discharges captured yet.</span>
                 ) : (
                   dischargeSummary.map((item) => (
                     <span key={`discharge-pill-${item.nurseId}`} className="count-pill">
@@ -1250,13 +1274,15 @@ function App() {
             ) : (
               <p className="muted">No discharges match “{dischargeFilter}”.</p>
             )}
+            <p className="help-text">Use the log when a new arrival needs priority or when leadership requests justification for prior assignments.</p>
           </div>
         </section>
       )}
 
       <section className="panel collapsible">
         <div className="panel-head">
-          <h2>Runtime input table (only occupied rooms)</h2>
+          <h2>Active patient list</h2>
+          <p className="panel-subtext">Maintain a single row per occupied room. Assign times when the patient first required care under this nurse team.</p>
           <button
             type="button"
             className="collapse-toggle"
@@ -1307,7 +1333,7 @@ function App() {
                           onChange={(e) => updateRowField(idx, 'room', e.target.value)}
                           className={roomInvalid ? 'invalid' : ''}
                         >
-                          <option value="">Select...</option>
+                          <option value="">Choose room...</option>
                           {canonicalRooms
                             .filter((roomOption) => !assignedRoomsSet.has(roomOption) || row.room === roomOption)
                             .map((roomOption) => (
@@ -1347,39 +1373,39 @@ function App() {
                         </td>
                       ))}
                       <td data-label="Status">
-                        {cautionText ? <span className="status-pill warning">Needs age tag</span> : <span className="status-pill ok">Ready</span>}
+                        {cautionText ? <span className="status-pill warning">Add age tag</span> : <span className="status-pill ok">Ready</span>}
                       </td>
                       <td className="row-actions" data-label="Actions">
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => dischargeRow(idx)}
-                        >
-                          Discharge
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={!row.under_24}
-                          onClick={() => promoteToOver24(idx)}
-                        >
-                          Promote 24h
-                        </button>
-                        <button
-                          type="button"
-                          className={`ghost ${row.discharge ? 'active' : ''}`}
-                          onClick={() => togglePrepareDischarge(idx)}
-                        >
-                          Prep discharge
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost danger"
-                          onClick={() => removeRow(idx)}
-                          aria-label="Remove row"
-                        >
-                          Remove
-                        </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => dischargeRow(idx)}
+                      >
+                        Discharge now
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={!row.under_24}
+                        onClick={() => promoteToOver24(idx)}
+                      >
+                        Promote to &gt;24h
+                      </button>
+                      <button
+                        type="button"
+                        className={`ghost ${row.discharge ? 'active' : ''}`}
+                        onClick={() => togglePrepareDischarge(idx)}
+                      >
+                        Toggle discharge prep
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost danger"
+                        onClick={() => removeRow(idx)}
+                        aria-label="Remove row"
+                      >
+                        Delete entry
+                      </button>
                       </td>
                     </tr>
                   );
@@ -1387,6 +1413,7 @@ function App() {
               </tbody>
             </table>
           </div>
+          <p className="help-text">List only current patients. Use the row actions to log discharges, promote age status, or flag a pending discharge without losing the original assignment.</p>
         </div>
       </section>
 
@@ -1417,7 +1444,7 @@ function App() {
               {labelColumns.every((col) => selectedRoom[col.key] !== 'Y') && <span className="detail-tag muted">No special tags</span>}
             </div>
             <div className="room-detail-assign">
-              <p>Move to another nurse:</p>
+              <p>Reassign to another nurse:</p>
               <div className="assign-grid">
                 {Array.from({ length: nNurses }, (_, idx) => {
                   const nurseId = idx + 1;

@@ -5,6 +5,39 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>charge-app</title>
+    <script>
+      (function () {
+        var storageKey = 'charge-app-state/v1';
+        var docEl = document.documentElement;
+        if (!docEl) return;
+        docEl.classList.add('theme-preload');
+        var theme = 'dark';
+        try {
+          var raw = window.localStorage.getItem(storageKey);
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && (parsed.theme === 'dark' || parsed.theme === 'light')) {
+              theme = parsed.theme;
+            }
+          }
+        } catch (err) {
+          theme = null;
+        }
+        if (theme) {
+          docEl.setAttribute('data-theme', theme);
+        }
+        var removePreload = function () {
+          docEl.classList.remove('theme-preload');
+        };
+        if (document.readyState === 'complete') {
+          requestAnimationFrame(removePreload);
+        } else {
+          window.addEventListener('load', function () {
+            requestAnimationFrame(removePreload);
+          });
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

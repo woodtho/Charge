@@ -67,7 +67,12 @@ body {
   transition: background 0.3s ease, color 0.3s ease;
 }
 
-body[data-theme='dark'] {
+:root.theme-preload,
+:root.theme-preload body {
+  transition: none !important;
+}
+
+:root[data-theme='dark'] {
   --color-body-bg: #03131f;
   --color-text-primary: #e3f3ff;
   --color-text-secondary: #a6bed3;
@@ -159,6 +164,30 @@ header h1 {
   color: var(--color-text-secondary);
 }
 
+.info-banner {
+  border-radius: 12px;
+  border: 1px solid var(--color-subtle-border);
+  background: var(--color-panel-bg);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 3px rgba(9, 41, 65, 0.08);
+  color: var(--color-text-secondary);
+}
+
+.info-banner strong {
+  color: var(--color-text-primary);
+  display: block;
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.78rem;
+}
+
+.info-banner em {
+  font-style: normal;
+  font-weight: 600;
+}
+
 .panel {
   background: var(--color-panel-bg);
   border: 1px solid var(--color-panel-border);
@@ -176,6 +205,17 @@ header h1 {
 
 .panel h2 {
   margin-top: 0;
+}
+
+.panel-subtext {
+  margin: 0.35rem 0 0;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  max-width: 52ch;
+}
+
+.panel-head > .panel-subtext {
+  margin-bottom: 0;
 }
 
 .panel-head {
@@ -395,7 +435,7 @@ button:not(:disabled):hover {
 
 .help-text {
   margin-top: 0.6rem;
-  color: #5f6368;
+  color: var(--color-text-secondary);
 }
 
 .validation {
@@ -790,24 +830,24 @@ button:not(:disabled):hover {
   color: #9aa0a6;
 }
 
-body.dark .assign-hint {
+[data-theme='dark'] .assign-hint {
   color: #cfd3dc;
 }
 
-body.dark .tag-pill.discharged {
+[data-theme='dark'] .tag-pill.discharged {
   background: #3c4043;
   color: #b0b7c3;
 }
 
-body.dark .discharge-log li {
+[data-theme='dark'] .discharge-log li {
   border-color: #3c4043;
 }
 
-body.dark .log-room {
+[data-theme='dark'] .log-room {
   color: #b0b7c3;
 }
 
-body.dark .log-time {
+[data-theme='dark'] .log-time {
   color: #8d94a3;
 }
 
