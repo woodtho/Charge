@@ -159,6 +159,27 @@ const TEST_ROWS: RoomRow[] = [
   makeSampleRow('16-2', '12:25', { under_24: true, vag: true }),
 ];
 
+const formatCompactTimeInput = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!/^\d{3,4}$/.test(trimmed)) return null;
+  const digits = trimmed.padStart(4, '0');
+  const hours = digits.slice(0, 2);
+  const minutes = digits.slice(2);
+  const hourNum = Number(hours);
+  const minuteNum = Number(minutes);
+  if (
+    Number.isNaN(hourNum) ||
+    Number.isNaN(minuteNum) ||
+    hourNum < 0 ||
+    hourNum > 23 ||
+    minuteNum < 0 ||
+    minuteNum > 59
+  ) {
+    return null;
+  }
+  return `${hours}:${minutes}`;
+};
+
 const describeRoom = (room: RoomAssignmentRow, tz: string) => {
   const tags = labelColumns
     .filter((col) => room[col.key] === 'Y')
@@ -776,6 +797,12 @@ function App() {
       });
     }
   };
+  const handleTimeBlur = (index: number, rawValue: string) => {
+    const formatted = formatCompactTimeInput(rawValue);
+    if (formatted && formatted !== rawValue) {
+      updateRowField(index, 'time', formatted);
+    }
+  };
 
   const addRow = () => setRows((prev) => [...prev, createEmptyRow()]);
   const dischargeRow = (index: number) => {
@@ -1350,6 +1377,7 @@ function App() {
                           placeholder="HH:MM"
                           value={row.time}
                           onChange={(e) => updateRowField(idx, 'time', e.target.value)}
+                          onBlur={(e) => handleTimeBlur(idx, e.target.value)}
                           className={timeInvalid ? 'invalid' : ''}
                         />
                       </td>
