@@ -17,21 +17,11 @@ type PersistedShape = {
   nNurses: number;
   timezone: string;
   lastSaved?: number;
-  dischargeHistory?: DischargeEvent[];
   servedCounts?: number[];
   assignmentSnapshot?: SerializedAssignmentResult | null;
   collapsedSections?: Partial<Record<SectionKey, boolean>>;
   servedByRoom?: RoomServeHistory;
   theme?: ThemeMode;
-};
-
-type DischargeEvent = {
-  id: string;
-  nurseId: number | null;
-  room: string;
-  label: string;
-  timestamp: number;
-  tags: string[];
 };
 
 type SerializedRoomAssignmentRow = Omit<RoomAssignmentRow, 'time'> & {
@@ -43,15 +33,75 @@ type SerializedAssignmentResult = {
   perNurse: NurseSummaryRow[];
 };
 
+type TimelineAgeGroup = 'under24' | 'over24' | 'none';
+
+type TimelineEntry = {
+  room: string;
+  tags: string[];
+  isGyn: boolean;
+  timeLabel: string | null;
+  ageGroup: TimelineAgeGroup;
+};
+
+const timelineAgeLabels: Record<TimelineAgeGroup, string> = {
+  under24: 'Under 24h',
+  over24: 'Over 24h',
+  none: '',
+};
+
+
+const AGE_GROUP_PRIORITY: Record<TimelineAgeGroup, number> = {
+  under24: 0,
+  over24: 1,
+  none: 2,
+};
+
+const getAgeGroupFromFlags = (
+  underFlag: 'Y' | '' | boolean | undefined,
+  overFlag: 'Y' | '' | boolean | undefined,
+): TimelineAgeGroup => {
+  if (underFlag === 'Y' || underFlag === true) return 'under24';
+  if (overFlag === 'Y' || overFlag === true) return 'over24';
+  return 'none';
+};
+
+const getAgeGroupForAssignment = (row: Pick<RoomAssignmentRow, 'under_24' | 'over_24'>): TimelineAgeGroup => {
+  return getAgeGroupFromFlags(row.under_24, row.over_24);
+};
+
+const compareAssignmentsByAge = (a: RoomAssignmentRow, b: RoomAssignmentRow): number => {
+  const ageDiff = AGE_GROUP_PRIORITY[getAgeGroupForAssignment(a)] - AGE_GROUP_PRIORITY[getAgeGroupForAssignment(b)];
+  if (ageDiff !== 0) return ageDiff;
+  const rankDiff = a.rank_oldest - b.rank_oldest;
+  if (rankDiff !== 0) return rankDiff;
+  return a.room.localeCompare(b.room);
+};
+
+const comparePerRoomTableRows = (a: RoomAssignmentRow, b: RoomAssignmentRow): number => {
+  if (a.nurse_id !== b.nurse_id) {
+    return a.nurse_id - b.nurse_id;
+  }
+  return compareAssignmentsByAge(a, b);
+};
+
+const sortRoomsWithinNurse = (rooms: RoomAssignmentRow[]): RoomAssignmentRow[] => {
+  return [...rooms].sort(compareAssignmentsByAge);
+};
+
+const sortPerRoomRows = (rooms: RoomAssignmentRow[]): RoomAssignmentRow[] => {
+  return [...rooms].sort(comparePerRoomTableRows);
+};
+
+
 type RoomServeHistory = Record<string, number[]>;
 
-type SectionKey = 'rooms' | 'perRoom' | 'controls' | 'dischargeLog' | 'runtimeTable';
+type SectionKey = 'rooms' | 'perRoom' | 'controls' | 'timeline' | 'runtimeTable';
 
 const defaultCollapsedState: Record<SectionKey, boolean> = {
   rooms: false,
   perRoom: false,
   controls: false,
-  dischargeLog: false,
+  timeline: false,
   runtimeTable: false,
 };
 
@@ -59,7 +109,7 @@ const sectionContentIds: Record<SectionKey, string> = {
   rooms: 'section-rooms-content',
   perRoom: 'section-per-room-content',
   controls: 'section-controls-content',
-  dischargeLog: 'section-discharge-content',
+  timeline: 'section-timeline-content',
   runtimeTable: 'section-runtime-content',
 };
 
@@ -198,17 +248,6 @@ const badgeClassForRoom = (room: RoomAssignmentRow) => {
   return '';
 };
 
-const formatRelativeTime = (timestamp: number, now: number) => {
-  const diff = Math.max(0, now - timestamp);
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-};
-
 const triggerDownload = (filename: string, contents: string, mime = 'text/plain') => {
   const blob = new Blob([contents], { type: `${mime};charset=utf-8;` });
   const url = URL.createObjectURL(blob);
@@ -225,13 +264,14 @@ const buildNurseSummary = (perRoom: RoomAssignmentRow[], nNurses: number, tz: st
   return Array.from({ length: nNurses }, (_, idx) => {
     const nurseId = idx + 1;
     const roomsForNurse = perRoom.filter((room) => room.nurse_id === nurseId);
+    const orderedRooms = sortRoomsWithinNurse(roomsForNurse);
     const labelCounts = labelColumns.reduce((acc, col) => {
       const countKey = `n_${col.key}` as LabelCountKey;
       const count = roomsForNurse.filter((room) => room[col.key] === 'Y').length;
       return { ...acc, [countKey]: count };
     }, {} as Record<LabelCountKey, number>);
 
-    const assignedRooms = roomsForNurse.map((room) => buildRoomLabel(room, tz)).join(', ');
+    const assignedRooms = orderedRooms.map((room) => buildRoomLabel(room, tz)).join(', ');
     const oldestRank = roomsForNurse.length ? Math.min(...roomsForNurse.map((room) => room.rank_oldest)) : null;
     const youngestRank = roomsForNurse.length ? Math.max(...roomsForNurse.map((room) => room.rank_youngest)) : null;
 
@@ -345,14 +385,11 @@ function App() {
   const [hydrated, setHydrated] = useState(false);
   const [lastSavedTs, setLastSavedTs] = useState<number | null>(null);
   const [assignmentSnapshot, setAssignmentSnapshot] = useState<AssignmentResult | null>(null);
-  const [dischargeHistory, setDischargeHistory] = useState<DischargeEvent[]>([]);
   const [draggingRoomId, setDraggingRoomId] = useState<string | null>(null);
   const [nurseServedCounts, setNurseServedCounts] = useState<number[]>([]);
   const [collapsedSections, setCollapsedSections] = useState<Record<SectionKey, boolean>>(defaultCollapsedState);
   const [servedByRoom, setServedByRoom] = useState<RoomServeHistory>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const [dischargeFilter, setDischargeFilter] = useState('');
-  const [relativeClock, setRelativeClock] = useState(Date.now());
   const [theme, setTheme] = useState<ThemeMode>(() => {
     if (typeof document === 'undefined') return 'dark';
     const attr = document.documentElement?.dataset.theme;
@@ -362,7 +399,7 @@ function App() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
     return window.matchMedia('(max-width: 640px)').matches;
   });
-  const [mobileCollapsedRows, setMobileCollapsedRows] = useState<Record<number, boolean>>({});
+  const [mobileExpandedRow, setMobileExpandedRow] = useState<number | null>(null);
   const [roomPickerOpen, setRoomPickerOpen] = useState(false);
   const [roomPickerSelection, setRoomPickerSelection] = useState<(typeof canonicalRooms)[number][]>([]);
   const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
@@ -418,14 +455,6 @@ function App() {
       if (typeof parsed.lastSaved === 'number') {
         setLastSavedTs(parsed.lastSaved);
       }
-      if (Array.isArray(parsed.dischargeHistory)) {
-        setDischargeHistory(
-          parsed.dischargeHistory.map((event) => ({
-            ...event,
-            tags: Array.isArray((event as DischargeEvent).tags) ? (event as DischargeEvent).tags : [],
-          })),
-        );
-      }
       if (Array.isArray(parsed.servedCounts)) {
         setNurseServedCounts(parsed.servedCounts);
       }
@@ -469,7 +498,6 @@ function App() {
       nNurses,
       timezone,
       lastSaved,
-      dischargeHistory,
       servedCounts: nurseServedCounts,
       assignmentSnapshot: serialiseAssignmentResult(assignmentSnapshot),
       collapsedSections,
@@ -478,7 +506,7 @@ function App() {
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     setLastSavedTs(lastSaved);
-  }, [rows, nNurses, timezone, dischargeHistory, nurseServedCounts, assignmentSnapshot, collapsedSections, servedByRoom, theme, hydrated]);
+  }, [rows, nNurses, timezone, nurseServedCounts, assignmentSnapshot, collapsedSections, servedByRoom, theme, hydrated]);
 
   useEffect(() => {
     setNurseServedCounts((prev) => {
@@ -519,34 +547,66 @@ function App() {
     );
     return canonicalRooms.filter((room) => !taken.has(room));
   }, [rows]);
-  const dischargeSummary = useMemo(() => {
-    const map = new Map<number, number>();
-    dischargeHistory.forEach((event) => {
-      if (event.nurseId) {
-        map.set(event.nurseId, (map.get(event.nurseId) ?? 0) + 1);
-      }
-    });
-    return Array.from(map.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([nurseId, count]) => ({ nurseId, count }));
-  }, [dischargeHistory]);
-  const filteredDischargeHistory = useMemo(() => {
-    const query = dischargeFilter.trim().toLowerCase();
-    const base = query
-      ? dischargeHistory.filter((event) => {
-          const haystack = [
-            event.room,
-            event.label,
-            event.tags.join(' '),
-            event.nurseId ? `nurse ${event.nurseId}` : '',
-          ]
-            .join(' ')
-            .toLowerCase();
-          return haystack.includes(query);
-        })
-      : dischargeHistory;
-    return base.slice(0, 25);
-  }, [dischargeHistory, dischargeFilter]);
+  const timelineEntries = useMemo<TimelineEntry[]>(() => {
+    const entries = parseResult.rows
+      .filter((row) => row.room)
+      .map((row) => {
+        const tags = labelColumns.filter((col) => row[col.key] === 'Y').map((col) => col.label);
+        const ageGroup = getAgeGroupFromFlags(row.under_24, row.over_24);
+        return {
+          room: row.room!,
+          isGyn: row.gyn === 'Y',
+          timeParsed: row.timeParsed,
+          tags,
+          ageGroup,
+        };
+      });
+
+    const withTime = entries
+      .filter((entry) => !entry.isGyn && entry.timeParsed)
+      .sort((a, b) => {
+        const ageDiff = AGE_GROUP_PRIORITY[a.ageGroup] - AGE_GROUP_PRIORITY[b.ageGroup];
+        if (ageDiff !== 0) return ageDiff;
+        const timeDiff = b.timeParsed!.toMillis() - a.timeParsed!.toMillis();
+        if (timeDiff !== 0) return timeDiff;
+        return a.room.localeCompare(b.room);
+      })
+      .map((entry) => ({
+        room: entry.room,
+        tags: entry.tags,
+        isGyn: false,
+        timeLabel: entry.timeParsed ? formatClock(entry.timeParsed, timezone) : null,
+        ageGroup: entry.ageGroup,
+      }));
+
+    const withoutTime = entries
+      .filter((entry) => !entry.isGyn && !entry.timeParsed)
+      .sort((a, b) => {
+        const ageDiff = AGE_GROUP_PRIORITY[a.ageGroup] - AGE_GROUP_PRIORITY[b.ageGroup];
+        if (ageDiff !== 0) return ageDiff;
+        return a.room.localeCompare(b.room);
+      })
+      .map((entry) => ({
+        room: entry.room,
+        tags: entry.tags,
+        isGyn: false,
+        timeLabel: null,
+        ageGroup: entry.ageGroup,
+      }));
+
+    const gynEntries = entries
+      .filter((entry) => entry.isGyn)
+      .sort((a, b) => a.room.localeCompare(b.room))
+      .map((entry) => ({
+        room: entry.room,
+        tags: entry.tags,
+        isGyn: true,
+        timeLabel: null,
+        ageGroup: entry.ageGroup,
+      }));
+
+    return [...withTime, ...withoutTime, ...gynEntries];
+  }, [parseResult.rows, timezone]);
   const selectedRoom = useMemo(() => {
     if (!selectedRoomId || !assignmentSnapshot) return null;
     return assignmentSnapshot.perRoom.find((room) => room.room === selectedRoomId) ?? null;
@@ -566,11 +626,6 @@ function App() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setRelativeClock(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -599,9 +654,14 @@ function App() {
 
   useEffect(() => {
     if (!isMobileViewport) {
-      setMobileCollapsedRows({});
+      setMobileExpandedRow(null);
+      return;
     }
-  }, [isMobileViewport]);
+    setMobileExpandedRow((prev) => {
+      if (prev === null) return prev;
+      return prev < rows.length ? prev : null;
+    });
+  }, [isMobileViewport, rows.length]);
 
   useEffect(() => {
     setRoomPickerSelection((prev) => prev.filter((room) => availableRooms.includes(room)));
@@ -656,6 +716,11 @@ function App() {
   }, [canAssign, parseResult.assignmentRows, nNurses, timezone]);
 
   const activeAssignments = assignmentSnapshot;
+
+  const orderedPerRoomRows = useMemo(() => {
+    if (!activeAssignments) return [];
+    return sortPerRoomRows(activeAssignments.perRoom);
+  }, [activeAssignments]);
 
   const hasPendingChanges = useMemo(() => {
     if (!pendingAssignment) return false;
@@ -762,7 +827,7 @@ function App() {
     ]);
 
     const roomHeader = ['Nurse', 'Room', 'Time', 'Rank oldest', 'Rank youngest', ...labelColumns.map((col) => col.label)];
-    const roomRows = activeAssignments.perRoom.map((room) => [
+    const roomRows = sortPerRoomRows(activeAssignments.perRoom).map((room) => [
       room.nurse_id,
       room.room,
       formatClock(room.time, timezone),
@@ -795,7 +860,8 @@ function App() {
       if (rooms.length === 0) {
         lines.push('  • No rooms assigned');
       } else {
-        rooms.forEach((room) => {
+        const orderedRooms = sortRoomsWithinNurse(rooms);
+        orderedRooms.forEach((room) => {
           const tags = labelColumns.filter((col) => room[col.key] === 'Y').map((col) => col.label);
           const tagStr = tags.length ? ` — ${tags.join(', ')}` : '';
           lines.push(`  • ${room.room} at ${formatClock(room.time, timezone)}${tagStr}`);
@@ -846,10 +912,8 @@ function App() {
     }
   };
   const toggleMobileRowCollapse = (index: number) => {
-    setMobileCollapsedRows((prev) => ({
-      ...prev,
-      [index]: !prev[index],
-    }));
+    if (!isMobileViewport) return;
+    setMobileExpandedRow((prev) => (prev === index ? null : index));
   };
   const toggleRoomPickerSelection = (room: (typeof canonicalRooms)[number]) => {
     setRoomPickerSelection((prev) => {
@@ -876,40 +940,6 @@ function App() {
   };
 
   const addRow = () => setRows((prev) => [...prev, createEmptyRow()]);
-  const dischargeRow = (index: number) => {
-    const roomId = rows[index]?.room?.trim();
-    if (roomId && assignmentSnapshot) {
-      const entry = assignmentSnapshot.perRoom.find((room) => room.room === roomId);
-      if (entry) {
-        const tagLabels = labelColumns
-          .filter((col) => entry[col.key] === 'Y')
-          .map((col) => col.label);
-        setDischargeHistory((prev) => [
-          {
-            id: `${roomId}-${Date.now()}`,
-            nurseId: entry.nurse_id,
-            room: entry.room,
-            label: buildRoomLabel(entry, timezone),
-            timestamp: Date.now(),
-            tags: tagLabels,
-          },
-          ...prev,
-        ].slice(0, 50));
-        setAssignmentSnapshot((prev) => {
-          if (!prev) return prev;
-          const perRoom = prev.perRoom.filter((room) => room.room !== roomId);
-          const perNurse = buildNurseSummary(perRoom, nNurses, timezone);
-          return { perRoom, perNurse };
-        });
-        resetRoomHistory(roomId);
-      }
-    }
-    setRows((prev) => {
-      const next = [...prev];
-      next[index] = createEmptyRow();
-      return next;
-    });
-  };
   const removeRow = (index: number) => {
     const roomId = rows[index]?.room?.trim();
     if (roomId) resetRoomHistory(roomId);
@@ -927,43 +957,9 @@ function App() {
       return next;
     });
   };
-  const togglePrepareDischarge = (index: number) => {
-    let updatedRoom: string | null = null;
-    let updatedFlag = false;
-    setRows((prev) => {
-      const next = [...prev];
-      const row = next[index];
-      if (!row) return prev;
-      const updated = { ...row, discharge: !row.discharge };
-      next[index] = updated;
-      updatedRoom = updated.room?.trim() || null;
-      updatedFlag = updated.discharge;
-      return next;
-    });
-    if (updatedRoom) {
-      const newFlagValue: '' | 'Y' = updatedFlag ? 'Y' : '';
-      setAssignmentSnapshot((prev) => {
-        if (!prev) return prev;
-        let touched = false;
-        const perRoom = prev.perRoom.map((room) => {
-          if (room.room === updatedRoom) {
-            touched = true;
-            return { ...room, discharge: newFlagValue };
-          }
-          return room;
-        });
-        if (!touched) return prev;
-        return {
-          perRoom,
-          perNurse: buildNurseSummary(perRoom, nNurses, timezone),
-        };
-      });
-    }
-  };
   const clearTable = () => {
     setRows([createEmptyRow()]);
     setAssignmentSnapshot(null);
-    setDischargeHistory([]);
     setNurseServedCounts(Array.from({ length: nNurses }, () => 0));
     setServedByRoom({});
   };
@@ -971,7 +967,6 @@ function App() {
   const loadTestData = () => {
     setRows(TEST_ROWS.map((row) => ({ ...row })));
     setAssignmentSnapshot(null);
-    setDischargeHistory([]);
     setNurseServedCounts(Array.from({ length: nNurses }, () => 0));
     setServedByRoom({});
   };
@@ -993,7 +988,7 @@ function App() {
       </header>
       <div className="info-banner">
         <strong>Quick guide</strong>
-        <p>Document every occupied room exactly once, wait for the status banner to read <em>Validation ready</em>, then run <em>Assign rooms</em>. Hover or tap any room pill to read the tags, drag to rebalance when needed, and rely on the discharge log for audit history.</p>
+        <p>Document every occupied room exactly once, wait for the status banner to read <em>Validation ready</em>, then run <em>Assign rooms</em>. Hover or tap any room pill to read the tags, drag to rebalance when needed, and rely on the timeline view for audit history.</p>
       </div>
 
       <section className="panel controls-panel collapsible">
@@ -1184,7 +1179,8 @@ function App() {
                   const roomInvalid = !!meta?.room && !meta.roomOk;
                   const timeInvalid = !!meta?.time && !meta.timeOk;
                   const cautionText = parseStateFresh ? cautionByRow.get(idx) : undefined;
-                  const isMobileCollapsed = isMobileViewport && mobileCollapsedRows[idx];
+                  const isRowExpanded = isMobileViewport && mobileExpandedRow === idx;
+                  const isMobileCollapsed = isMobileViewport ? !isRowExpanded : false;
                   const summaryRoomLabel = row.room || 'Room pending';
                   const summaryTimeLabel = row.time || '--:--';
                   const summaryStatusLabel = cautionText ? 'Needs age tag' : 'Ready';
@@ -1302,24 +1298,10 @@ function App() {
                       <button
                         type="button"
                         className="ghost"
-                        onClick={() => dischargeRow(idx)}
-                      >
-                        Discharge now
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
                         disabled={!row.under_24}
                         onClick={() => promoteToOver24(idx)}
                       >
                         Promote to &gt;24h
-                      </button>
-                      <button
-                        type="button"
-                        className={`ghost ${row.discharge ? 'active' : ''}`}
-                        onClick={() => togglePrepareDischarge(idx)}
-                      >
-                        Toggle discharge prep
                       </button>
                       <button
                         type="button"
@@ -1336,7 +1318,7 @@ function App() {
               </tbody>
             </table>
           </div>
-          <p className="help-text">List only current patients. Use the row actions to log discharges, promote age status, or flag a pending discharge without losing the original assignment.</p>
+          <p className="help-text">List only current patients. Use the row actions to promote age status or remove entries when a patient leaves the unit.</p>
         </div>
       </section>
 
@@ -1403,6 +1385,7 @@ function App() {
                 const roomsForNurse = activeAssignments.perRoom.filter(
                   (room) => room.nurse_id === row.nurse_id,
                 );
+                const orderedRoomsForNurse = sortRoomsWithinNurse(roomsForNurse);
                 return (
                   <article
                     key={`nurse-card-${row.nurse_id}`}
@@ -1426,8 +1409,8 @@ function App() {
                       Oldest rank: {row.oldest_rank_received ?? '—'} • Youngest rank: {row.youngest_rank_received ?? '—'}
                     </p>
                     <div className="assigned-list">
-                      {roomsForNurse.length > 0 ? (
-                      roomsForNurse.map((room) => (
+                      {orderedRoomsForNurse.length > 0 ? (
+                      orderedRoomsForNurse.map((room) => (
                         <span
                           key={`${row.nurse_id}-${room.room}-${room.rank_oldest}`}
                           className={`tag-pill draggable ${draggingRoomId === room.room ? 'dragging' : ''}`}
@@ -1453,32 +1436,12 @@ function App() {
                         <span className="muted">No rooms assigned</span>
                       )}
                     </div>
-                  {dischargeHistory.filter((event) => event.nurseId === row.nurse_id).length > 0 && (
-                    <div className="assigned-list discharged">
-                      {dischargeHistory
-                        .filter((event) => event.nurseId === row.nurse_id)
-                        .map((event) => {
-                          const timeLabel = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                          return (
-                            <span
-                              key={event.id}
-                              className="tag-pill discharged"
-                              data-tooltip={`Discharged at ${timeLabel}`}
-                              aria-label={`${event.label} discharged at ${timeLabel}`}
-                            >
-                              <span className="pill-text">{event.label}</span>
-                              <span className="pill-time" aria-hidden="true">{timeLabel}</span>
-                            </span>
-                          );
-                        })}
-                    </div>
-                  )}
                     <footer>
                       {labelColumns.map((col) => {
                         const countKey = `n_${col.key}` as LabelCountKey;
                         const value = row[countKey];
                         if (!value) return null;
-                        const roomList = roomsForNurse
+                        const roomList = orderedRoomsForNurse
                           .filter((room) => room[col.key] === 'Y')
                           .map((room) => `${room.room} (${formatClock(room.time, timezone)})`)
                           .join(', ');
@@ -1499,6 +1462,84 @@ function App() {
             </div>
           ) : (
             <p className="muted">Enter at least one validated room and select “Assign rooms” to generate the distribution.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="panel collapsible">
+        <div className="panel-head">
+          <div>
+            <h2>Census timeline</h2>
+            <p className="panel-subtext">Newest arrivals appear first. GYN patients (no time logged) are grouped at the end.</p>
+          </div>
+          <button
+            type="button"
+            className="collapse-toggle"
+            aria-controls={sectionContentIds.timeline}
+            aria-expanded={!isSectionCollapsed('timeline')}
+            onClick={() => toggleSection('timeline')}
+          >
+            {isSectionCollapsed('timeline') ? 'Expand' : 'Collapse'}
+            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('timeline')} />
+          </button>
+        </div>
+        <div
+          id={sectionContentIds.timeline}
+          className={`panel-content ${isSectionCollapsed('timeline') ? 'collapsed' : ''}`}
+          aria-hidden={isSectionCollapsed('timeline')}
+        >
+          {timelineEntries.length > 0 ? (
+            <ol className="timeline-list">
+              {timelineEntries.map((entry, index) => {
+                const timeDescription = entry.timeLabel
+                  ? entry.timeLabel
+                  : entry.isGyn
+                    ? 'GYN patient (time not tracked)'
+                    : 'Time not logged';
+                const showAgeLabel = entry.ageGroup !== 'none';
+                return (
+                  <li
+                    key={`timeline-${entry.room}-${index}`}
+                    className={`timeline-item ${entry.isGyn ? 'is-gyn' : ''}`}
+                  >
+                    <div className="timeline-main">
+                      <div className="timeline-header">
+                        <span className="timeline-room">{entry.room}</span>
+                        <div className="timeline-badges">
+                          {showAgeLabel && (
+                            <span className={`timeline-age ${entry.ageGroup}`}>
+                              {timelineAgeLabels[entry.ageGroup]}
+                            </span>
+                          )}
+                          {entry.isGyn && (
+                            <span className="timeline-age gyn">GYN</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="timeline-meta">
+                        <span className="timeline-time">{timeDescription}</span>
+                        <div className="timeline-tags">
+                          {entry.tags.length > 0 ? (
+                            entry.tags.map((tag) => (
+                              <span
+                                key={`timeline-tag-${entry.room}-${tag}`}
+                                className="timeline-tag"
+                              >
+                                {tag}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="timeline-tag muted">No tags</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          ) : (
+            <p className="muted">Add rooms above to see a running timeline.</p>
           )}
         </div>
       </section>
@@ -1539,7 +1580,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {activeAssignments.perRoom.map((room) => (
+                  {orderedPerRoomRows.map((room) => (
                     <tr key={`${room.nurse_id}-${room.room}-${room.rank_oldest}`}>
                       <td data-label="Nurse">{room.nurse_id}</td>
                       <td data-label="Room">{room.room}</td>
@@ -1557,90 +1598,6 @@ function App() {
               </table>
             </div>
             <p className="help-text">Use this detail view for audits, disputes, or handoff notes. Export to CSV whenever leadership requests a snapshot.</p>
-          </div>
-        </section>
-      )}
-
-      
-
-      {dischargeHistory.length > 0 && (
-        <section className="panel collapsible">
-          <div className="panel-head">
-            <div>
-              <h2>Discharge log</h2>
-              <p className="panel-subtext">Full audit trail of rooms that left this shift. Reference it when balancing future arrivals.</p>
-            </div>
-            <button
-              type="button"
-              className="collapse-toggle"
-              aria-controls={sectionContentIds.dischargeLog}
-              aria-expanded={!isSectionCollapsed('dischargeLog')}
-              onClick={() => toggleSection('dischargeLog')}
-            >
-              {isSectionCollapsed('dischargeLog') ? 'Expand' : 'Collapse'}
-              <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('dischargeLog')} />
-            </button>
-          </div>
-          <div
-            id={sectionContentIds.dischargeLog}
-            className={`panel-content ${isSectionCollapsed('dischargeLog') ? 'collapsed' : ''}`}
-            aria-hidden={isSectionCollapsed('dischargeLog')}
-          >
-            <div className="discharge-tools">
-              <div className="discharge-summary">
-                {dischargeSummary.length === 0 ? (
-                  <span className="muted">No discharges captured yet.</span>
-                ) : (
-                  dischargeSummary.map((item) => (
-                    <span key={`discharge-pill-${item.nurseId}`} className="count-pill">
-                      Nurse {item.nurseId}: {item.count}
-                    </span>
-                  ))
-                )}
-              </div>
-              <label className="filter-field">
-                <span>Filter log</span>
-                <input
-                  type="text"
-                  placeholder="Search room, nurse, or tag"
-                  value={dischargeFilter}
-                  onChange={(e) => setDischargeFilter(e.target.value)}
-                />
-              </label>
-            </div>
-            {filteredDischargeHistory.length > 0 ? (
-              <div className="table-scroll discharge-scroll">
-                <table className="data-table discharge-table">
-                  <thead>
-                    <tr>
-                      <th>Room</th>
-                      <th>Nurse</th>
-                      <th>Discharged at</th>
-                      <th>Elapsed</th>
-                      <th>Tags</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredDischargeHistory.map((event) => (
-                      <tr key={event.id}>
-                        <td data-label="Room">{event.room}</td>
-                        <td data-label="Nurse">{event.nurseId ? `Nurse ${event.nurseId}` : '—'}</td>
-                        <td data-label="Discharged at">
-                          {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </td>
-                        <td data-label="Elapsed">{formatRelativeTime(event.timestamp, relativeClock)}</td>
-                        <td data-label="Tags">
-                          {event.tags.length > 0 ? event.tags.join(', ') : 'No tags'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="muted">No discharges match “{dischargeFilter}”.</p>
-            )}
-            <p className="help-text">Use the log when a new arrival needs priority or when leadership requests justification for prior assignments.</p>
           </div>
         </section>
       )}

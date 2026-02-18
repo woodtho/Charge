@@ -70,6 +70,28 @@ function roomWorkload(row: AssignmentInputRow): number {
   return Math.max(weight, 0.2);
 }
 
+type SortDirection = 'oldest' | 'newest';
+
+function getAgePriority(row: Pick<AssignmentInputRow, 'under_24' | 'over_24'>): number {
+  if (row.under_24 === 'Y') return 0;
+  if (row.over_24 === 'Y') return 1;
+  return 2;
+}
+
+function compareByAgeThenTime(a: DerivedRoom, b: DerivedRoom, direction: SortDirection = 'oldest'): number {
+  const ageDiff = getAgePriority(a) - getAgePriority(b);
+  if (ageDiff !== 0) return ageDiff;
+  const timeDiff = a.timeParsed.toMillis() - b.timeParsed.toMillis();
+  if (timeDiff !== 0) {
+    return direction === 'oldest' ? timeDiff : -timeDiff;
+  }
+  return a.room.localeCompare(b.room);
+}
+
+function sortByAgeThenTime(data: DerivedRoom[], direction: SortDirection = 'oldest'): DerivedRoom[] {
+  return [...data].sort((a, b) => compareByAgeThenTime(a, b, direction));
+}
+
 function stablePseudoRandomKey(room: string, timeParsed: DateTime): number {
   const stamp = `${room}|${timeParsed.toFormat('yyyy-MM-dd HH:mm')}`;
   let acc = 0;
@@ -188,9 +210,6 @@ function assignRoomsToState(
   const assignment = new Map<string, number>();
   let roundRobinIndex = 0;
 
-  const sortOldestFirst = (data: DerivedRoom[]) =>
-    [...data].sort((a, b) => a.timeParsed.toMillis() - b.timeParsed.toMillis() || a.room.localeCompare(b.room));
-
   const assignWithScoring = (room: DerivedRoom) => {
     if (assignment.has(room.room)) return;
     const chosen = pickNurse(room, state, capacities, capacityMap);
@@ -205,8 +224,8 @@ function assignRoomsToState(
     });
   };
 
-  const assignRoundRobin = (data: DerivedRoom[]) => {
-    const ordered = sortOldestFirst(data).filter((room) => !assignment.has(room.room));
+  const assignRoundRobin = (data: DerivedRoom[], direction: SortDirection = 'oldest') => {
+    const ordered = sortByAgeThenTime(data, direction).filter((room) => !assignment.has(room.room));
     ordered.forEach((room) => {
       const candidates = getRoundRobinOrder().filter((nurse) => nurse.remaining > 0);
       if (candidates.length === 0) {
@@ -227,19 +246,19 @@ function assignRoomsToState(
     });
   };
 
-  const assignSequence = (data: DerivedRoom[]) => {
-    sortOldestFirst(data)
+  const assignSequence = (data: DerivedRoom[], direction: SortDirection = 'oldest') => {
+    sortByAgeThenTime(data, direction)
       .filter((room) => !assignment.has(room.room))
       .forEach(assignWithScoring);
   };
 
   const dischargeRooms = rooms.filter((room) => room.discharge === 'Y');
-  const oldRooms = rooms.filter((room) => room.over_24 === 'Y');
   const youngRooms = rooms.filter((room) => room.under_24 === 'Y');
+  const oldRooms = rooms.filter((room) => room.over_24 === 'Y');
 
   assignRoundRobin(dischargeRooms);
-  assignRoundRobin(oldRooms);
   assignRoundRobin(youngRooms);
+  assignRoundRobin(oldRooms);
 
   const remainingRooms = rooms.filter((room) => !assignment.has(room.room));
   assignSequence(remainingRooms);
