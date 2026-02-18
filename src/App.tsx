@@ -10,6 +10,8 @@ import { useDebouncedValue } from './hooks/useDebouncedValue';
 
 const STORAGE_KEY = 'charge-app-state/v1';
 
+type ThemeMode = 'light' | 'dark';
+
 type PersistedShape = {
   rows: RoomRow[];
   nNurses: number;
@@ -20,6 +22,7 @@ type PersistedShape = {
   assignmentSnapshot?: SerializedAssignmentResult | null;
   collapsedSections?: Partial<Record<SectionKey, boolean>>;
   servedByRoom?: RoomServeHistory;
+  theme?: ThemeMode;
 };
 
 type DischargeEvent = {
@@ -325,6 +328,7 @@ function App() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [dischargeFilter, setDischargeFilter] = useState('');
   const [relativeClock, setRelativeClock] = useState(Date.now());
+  const [theme, setTheme] = useState<ThemeMode>('light');
   const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
   const toggleSection = (key: SectionKey) => {
     setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -411,6 +415,9 @@ function App() {
       if (parsed.servedByRoom) {
         setServedByRoom(sanitiseServeHistory(parsed.servedByRoom));
       }
+      if (parsed.theme === 'dark' || parsed.theme === 'light') {
+        setTheme(parsed.theme);
+      }
     } catch (error) {
       console.warn('Unable to restore saved state', error);
     } finally {
@@ -431,10 +438,11 @@ function App() {
       assignmentSnapshot: serialiseAssignmentResult(assignmentSnapshot),
       collapsedSections,
       servedByRoom,
+      theme,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     setLastSavedTs(lastSaved);
-  }, [rows, nNurses, timezone, dischargeHistory, nurseServedCounts, assignmentSnapshot, collapsedSections, servedByRoom, hydrated]);
+  }, [rows, nNurses, timezone, dischargeHistory, nurseServedCounts, assignmentSnapshot, collapsedSections, servedByRoom, theme, hydrated]);
 
   useEffect(() => {
     setNurseServedCounts((prev) => {
@@ -520,6 +528,14 @@ function App() {
     const timer = window.setInterval(() => setRelativeClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    document.body.dataset.theme = theme;
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+  };
 
   const cautionByRow = useMemo(() => {
     const map = new Map<number, string>();
@@ -858,7 +874,13 @@ function App() {
           <h1>Room-to-Nurse Assignment</h1>
           <p className="subtitle">Primary outputs first, responsive editing always available.</p>
         </div>
-        <span className="persist-meta">{savedLabel}</span>
+        <div className="header-actions">
+          <button type="button" className="ghost-button theme-toggle" onClick={toggleTheme}>
+            <span className="theme-icon" aria-hidden="true">{theme === 'light' ? '🌙' : '☀️'}</span>
+            <span>{theme === 'light' ? 'Dark mode' : 'Light mode'}</span>
+          </button>
+          <span className="persist-meta">{savedLabel}</span>
+        </div>
       </header>
 
       <section className="panel highlight collapsible">
