@@ -1085,6 +1085,7 @@ function App() {
                     <div className="room-picker-actions">
                       <button
                         type="button"
+                        className="room-picker-submit"
                         onClick={addRoomsFromPicker}
                         disabled={roomPickerSelection.length === 0}
                       >

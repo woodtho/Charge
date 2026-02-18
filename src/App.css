@@ -479,10 +479,31 @@ select.invalid {
   color: var(--color-text-secondary);
 }
 
+.room-chip:not(.selected) .room-chip-state {
+  color: var(--color-muted);
+}
+
+.room-chip:not(.selected) {
+  color: var(--color-text-primary);
+}
+
 .room-picker-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.room-picker-actions button,
+.room-picker-actions .ghost-button {
+  flex: 1 1 200px;
+  justify-content: center;
+  text-align: center;
+}
+
+.room-picker-actions .ghost-button {
+  border: 1px dashed var(--color-subtle-border);
+  background: var(--color-panel-bg);
+  color: var(--color-text-primary);
 }
 
 .room-picker-actions button:disabled {
@@ -508,25 +529,35 @@ select.invalid {
 
 button {
   border: none;
-  border-radius: 6px;
-  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  padding: 0.55rem 1.1rem;
   background: var(--color-button-primary);
   color: var(--color-button-text);
   font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(26, 115, 232, 0.25);
-  transition: transform 120ms ease, box-shadow 120ms ease;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  text-align: center;
+  line-height: 1.2;
 }
 
 button.secondary {
   background: var(--color-button-secondary);
 }
 
-.ghost-button {
+.ghost-button,
+.row-actions .ghost {
   background: transparent;
   color: var(--color-ghost-text);
   border: 1px dashed var(--color-ghost-border);
   box-shadow: none;
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
 }
 
 button:disabled {
@@ -538,6 +569,24 @@ button:disabled {
 button:not(:disabled):hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(26, 115, 232, 0.3);
+}
+
+button:focus-visible {
+  outline: 3px solid var(--color-highlight-border);
+  outline-offset: 2px;
+}
+
+.room-picker-submit {
+  background: var(--color-highlight-border);
+  border: 1px solid var(--color-highlight-border);
+  color: #fff;
+  box-shadow: 0 6px 16px var(--color-highlight-glow);
+}
+
+.room-picker-submit:disabled {
+  background: var(--color-subtle-border);
+  border-color: var(--color-subtle-border);
+  color: var(--color-muted);
 }
 
 .help-text {
@@ -660,24 +709,24 @@ button:not(:disabled):hover {
 }
 
 .row-actions .ghost {
-  background: transparent;
-  color: var(--color-ghost-text);
-  border: 1px solid transparent;
-  padding: 0.2rem 0.4rem;
   font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+  justify-content: flex-start;
 }
 
-.row-actions .ghost:hover {
-  border-color: currentColor;
+.row-actions .ghost:hover:not(:disabled) {
+  border-color: var(--color-ghost-border);
 }
 
 .row-actions .ghost:disabled {
-  color: #9aa0a6;
+  color: var(--color-muted);
+  border-color: transparent;
   cursor: not-allowed;
 }
 
 .row-actions .ghost.danger {
   color: var(--color-danger);
+  border-color: var(--color-danger);
 }
 
 .row-actions .ghost.active {
