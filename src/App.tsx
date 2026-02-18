@@ -736,13 +736,15 @@ function App() {
               <tbody>
                 {activeAssignments.perRoom.map((room) => (
                   <tr key={`${room.nurse_id}-${room.room}-${room.rank_oldest}`}>
-                    <td>{room.nurse_id}</td>
-                    <td>{room.room}</td>
-                    <td>{formatClock(room.time, timezone)}</td>
-                    <td>{room.rank_oldest}</td>
-                    <td>{room.rank_youngest}</td>
+                    <td data-label="Nurse">{room.nurse_id}</td>
+                    <td data-label="Room">{room.room}</td>
+                    <td data-label="Time">{formatClock(room.time, timezone)}</td>
+                    <td data-label="Rank (oldest)">{room.rank_oldest}</td>
+                    <td data-label="Rank (youngest)">{room.rank_youngest}</td>
                     {labelColumns.map((col) => (
-                      <td key={`${room.room}-${col.key}`}>{room[col.key] === 'Y' ? 'Y' : ''}</td>
+                      <td key={`${room.room}-${col.key}`} data-label={col.label}>
+                        {room[col.key] === 'Y' ? 'Y' : ''}
+                      </td>
                     ))}
                   </tr>
                 ))}
@@ -855,7 +857,7 @@ function App() {
                 const cautionText = parseStateFresh ? cautionByRow.get(idx) : undefined;
                 return (
                   <tr key={`row-${idx}`}>
-                    <td>
+                    <td data-label="Room">
                       <select
                         value={row.room}
                         onChange={(e) => updateRowField(idx, 'room', e.target.value)}
@@ -871,7 +873,7 @@ function App() {
                           ))}
                       </select>
                     </td>
-                    <td>
+                    <td data-label="Time">
                       <input
                         type="text"
                         inputMode="numeric"
@@ -882,7 +884,7 @@ function App() {
                       />
                     </td>
                     {labelColumns.map((col) => (
-                      <td key={`${col.key}-${idx}`}>
+                      <td key={`${col.key}-${idx}`} data-label={col.label}>
                         <label className="checkbox" title={col.description}>
                           <input
                             type="checkbox"
@@ -899,10 +901,10 @@ function App() {
                         </label>
                       </td>
                     ))}
-                    <td>
+                    <td data-label="Status">
                       {cautionText ? <span className="status-pill warning">Needs age tag</span> : <span className="status-pill ok">Ready</span>}
                     </td>
-                    <td className="row-actions">
+                    <td className="row-actions" data-label="Actions">
                       <button
                         type="button"
                         className="ghost"

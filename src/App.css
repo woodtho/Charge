@@ -1,7 +1,7 @@
 .app-shell {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 2rem 1.5rem 4rem;
+  padding: clamp(1rem, 4vw, 2rem) clamp(0.75rem, 3vw, 1.5rem) 4rem;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
@@ -618,6 +618,43 @@ body.dark .log-time {
   color: #8d94a3;
 }
 
+@media (max-width: 900px) {
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .assign-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .assign-actions button {
+    width: 100%;
+  }
+
+  .export-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .export-actions button {
+    width: 100%;
+  }
+
+  .button-row {
+    flex-direction: column;
+  }
+
+  .button-row button {
+    width: 100%;
+  }
+
+  .controls-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 768px) {
   .panel-head {
     flex-direction: column;
@@ -626,5 +663,65 @@ body.dark .log-time {
 
   .card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .table-scroll {
+    max-height: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .input-table thead,
+  .data-table thead {
+    display: none;
+  }
+
+  .input-table tbody tr,
+  .data-table tbody tr {
+    display: block;
+    margin-bottom: 1rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 0.65rem 0.75rem;
+    background: #fff;
+  }
+
+  .input-table tbody tr:nth-child(even),
+  .data-table tbody tr:nth-child(even) {
+    background: #fff;
+  }
+
+  .input-table td,
+  .data-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border: none;
+    padding: 0.35rem 0;
+    gap: 1rem;
+  }
+
+  .input-table td::before,
+  .data-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: #5f6368;
+    text-transform: none;
+    flex: 0 0 45%;
+  }
+
+  .row-actions {
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .row-actions .ghost,
+  .row-actions .ghost-button {
+    width: 100%;
+    text-align: left;
+  }
+
+  .checkbox {
+    justify-content: flex-end;
   }
 }
