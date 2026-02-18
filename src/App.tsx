@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { DateTime } from 'luxon';
 import './App.css';
 import { canonicalRooms, labelColumns, type LabelKey } from './constants';
 import type { LabelCountKey, NurseSummaryRow, RoomAssignmentRow, RoomRow } from './types';
@@ -16,6 +17,9 @@ type PersistedShape = {
   lastSaved?: number;
   dischargeHistory?: DischargeEvent[];
   servedCounts?: number[];
+  assignmentSnapshot?: SerializedAssignmentResult | null;
+  collapsedSections?: Partial<Record<SectionKey, boolean>>;
+  servedByRoom?: RoomServeHistory;
 };
 
 type DischargeEvent = {
@@ -24,6 +28,80 @@ type DischargeEvent = {
   room: string;
   label: string;
   timestamp: number;
+};
+
+type SerializedRoomAssignmentRow = Omit<RoomAssignmentRow, 'time'> & {
+  timeISO: string;
+};
+
+type SerializedAssignmentResult = {
+  perRoom: SerializedRoomAssignmentRow[];
+  perNurse: NurseSummaryRow[];
+};
+
+type RoomServeHistory = Record<string, number[]>;
+
+type SectionKey = 'rooms' | 'perRoom' | 'controls' | 'dischargeLog' | 'runtimeTable';
+
+const defaultCollapsedState: Record<SectionKey, boolean> = {
+  rooms: false,
+  perRoom: false,
+  controls: false,
+  dischargeLog: false,
+  runtimeTable: false,
+};
+
+const sectionContentIds: Record<SectionKey, string> = {
+  rooms: 'section-rooms-content',
+  perRoom: 'section-per-room-content',
+  controls: 'section-controls-content',
+  dischargeLog: 'section-discharge-content',
+  runtimeTable: 'section-runtime-content',
+};
+
+const serialiseAssignmentResult = (assignment: AssignmentResult | null): SerializedAssignmentResult | null => {
+  if (!assignment) return null;
+  const perRoom = assignment.perRoom
+    .map((room) => {
+      const { time, ...rest } = room;
+      const iso = time.toISO() ?? time.toUTC().toISO() ?? new Date(time.toMillis()).toISOString();
+      return { ...rest, timeISO: iso };
+    });
+  return {
+    perRoom,
+    perNurse: assignment.perNurse,
+  };
+};
+
+const hydrateAssignmentResult = (payload?: SerializedAssignmentResult | null): AssignmentResult | null => {
+  if (!payload) return null;
+  const perRoom: RoomAssignmentRow[] = payload.perRoom
+    .map((row) => {
+      const { timeISO, ...rest } = row;
+      const parsed = DateTime.fromISO(timeISO);
+      if (!parsed.isValid) return null;
+      return { ...rest, time: parsed };
+    })
+    .filter((row): row is RoomAssignmentRow => row !== null);
+  if (perRoom.length === 0 && payload.perRoom.length > 0) {
+    return null;
+  }
+  return {
+    perRoom,
+    perNurse: Array.isArray(payload.perNurse) ? payload.perNurse : [],
+  };
+};
+
+const sanitiseServeHistory = (raw?: unknown): RoomServeHistory => {
+  if (!raw || typeof raw !== 'object') return {};
+  return Object.entries(raw as Record<string, unknown>).reduce((acc, [room, value]) => {
+    if (!room || typeof room !== 'string') return acc;
+    if (!Array.isArray(value)) return acc;
+    const filtered = value.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0);
+    if (filtered.length === 0) return acc;
+    acc[room] = Array.from(new Set(filtered));
+    return acc;
+  }, {} as RoomServeHistory);
 };
 
 const ensureRowShape = (raw?: Partial<RoomRow>): RoomRow => {
@@ -141,18 +219,32 @@ const mergeAssignments = (
   nNurses: number,
   tz: string,
   servedCounts: number[],
-): { result: AssignmentResult; updatedServedCounts: number[] } => {
+  servedHistory: RoomServeHistory,
+): { result: AssignmentResult; updatedServedCounts: number[]; updatedServedByRoom: RoomServeHistory } => {
   const counts = ensureCountsLength(servedCounts, nNurses);
+  const history: RoomServeHistory = Object.entries(servedHistory).reduce((acc, [room, ids]) => {
+    acc[room] = Array.from(new Set(ids));
+    return acc;
+  }, {} as RoomServeHistory);
+
   if (!previous) {
-    const updatedCounts = [...counts];
     next.perRoom.forEach((room) => {
-      const idx = room.nurse_id - 1;
-      if (idx >= 0) {
-        updatedCounts[idx] = (updatedCounts[idx] ?? 0) + 1;
+      const recorded = history[room.room] ?? [];
+      if (!recorded.includes(room.nurse_id)) {
+        history[room.room] = [...recorded, room.nurse_id];
+        const idx = room.nurse_id - 1;
+        if (idx >= 0) {
+          counts[idx] = (counts[idx] ?? 0) + 1;
+        }
       }
     });
-    return { result: next, updatedServedCounts: updatedCounts };
+    const activeRooms = new Set(next.perRoom.map((room) => room.room));
+    Object.keys(history).forEach((room) => {
+      if (!activeRooms.has(room)) delete history[room];
+    });
+    return { result: next, updatedServedCounts: counts, updatedServedByRoom: history };
   }
+
   const nextByRoom = new Map(next.perRoom.map((room) => [room.room, room]));
   const prevRooms = previous.perRoom;
   const preserved = prevRooms
@@ -179,14 +271,31 @@ const mergeAssignments = (
       return a - b;
     });
     const chosen = candidates[0] ?? 1;
-    counts[chosen - 1] = (counts[chosen - 1] ?? 0) + 1;
     nurseCounts.set(chosen, (nurseCounts.get(chosen) ?? 0) + 1);
     return { ...room, nurse_id: chosen };
   });
 
   const perRoom = [...preserved, ...assignedNewRooms];
+  perRoom.forEach((room) => {
+    const recorded = history[room.room] ?? [];
+    if (!recorded.includes(room.nurse_id)) {
+      history[room.room] = [...recorded, room.nurse_id];
+      const idx = room.nurse_id - 1;
+      if (idx >= 0) {
+        counts[idx] = (counts[idx] ?? 0) + 1;
+      }
+    }
+  });
+
+  const activeRooms = new Set(perRoom.map((room) => room.room));
+  Object.keys(history).forEach((room) => {
+    if (!activeRooms.has(room)) {
+      delete history[room];
+    }
+  });
+
   const perNurse = buildNurseSummary(perRoom, nNurses, tz);
-  return { result: { perRoom, perNurse }, updatedServedCounts: counts };
+  return { result: { perRoom, perNurse }, updatedServedCounts: counts, updatedServedByRoom: history };
 };
 
 function App() {
@@ -199,6 +308,38 @@ function App() {
   const [dischargeHistory, setDischargeHistory] = useState<DischargeEvent[]>([]);
   const [draggingRoomId, setDraggingRoomId] = useState<string | null>(null);
   const [nurseServedCounts, setNurseServedCounts] = useState<number[]>([]);
+  const [collapsedSections, setCollapsedSections] = useState<Record<SectionKey, boolean>>(defaultCollapsedState);
+  const [servedByRoom, setServedByRoom] = useState<RoomServeHistory>({});
+  const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
+  const toggleSection = (key: SectionKey) => {
+    setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  const creditRoomForNurse = (roomId: string, nurseId: number) => {
+    if (!roomId || nurseId <= 0) return;
+    setServedByRoom((prev) => {
+      const prior = prev[roomId] ?? [];
+      if (prior.includes(nurseId)) return prev;
+      const updatedHistory = { ...prev, [roomId]: [...prior, nurseId] };
+      setNurseServedCounts((countsPrev) => {
+        const next = ensureCountsLength(countsPrev, nNurses);
+        const idx = nurseId - 1;
+        if (idx >= 0) {
+          next[idx] = (next[idx] ?? 0) + 1;
+        }
+        return next;
+      });
+      return updatedHistory;
+    });
+  };
+  const resetRoomHistory = (roomId: string) => {
+    if (!roomId) return;
+    setServedByRoom((prev) => {
+      if (!(roomId in prev)) return prev;
+      const next = { ...prev };
+      delete next[roomId];
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -228,6 +369,28 @@ function App() {
       if (Array.isArray(parsed.servedCounts)) {
         setNurseServedCounts(parsed.servedCounts);
       }
+      if (parsed.assignmentSnapshot) {
+        const restored = hydrateAssignmentResult(parsed.assignmentSnapshot);
+        if (restored) {
+          setAssignmentSnapshot(restored);
+        }
+      }
+      const collapsedPrefs = parsed.collapsedSections;
+      if (collapsedPrefs && typeof collapsedPrefs === 'object') {
+        setCollapsedSections((prev) => {
+          const next = { ...prev };
+          (Object.keys(collapsedPrefs) as SectionKey[]).forEach((key) => {
+            const value = collapsedPrefs[key];
+            if (typeof value === 'boolean' && key in next) {
+              next[key] = value;
+            }
+          });
+          return next;
+        });
+      }
+      if (parsed.servedByRoom) {
+        setServedByRoom(sanitiseServeHistory(parsed.servedByRoom));
+      }
     } catch (error) {
       console.warn('Unable to restore saved state', error);
     } finally {
@@ -245,10 +408,13 @@ function App() {
       lastSaved,
       dischargeHistory,
       servedCounts: nurseServedCounts,
+      assignmentSnapshot: serialiseAssignmentResult(assignmentSnapshot),
+      collapsedSections,
+      servedByRoom,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     setLastSavedTs(lastSaved);
-  }, [rows, nNurses, timezone, dischargeHistory, nurseServedCounts, hydrated]);
+  }, [rows, nNurses, timezone, dischargeHistory, nurseServedCounts, assignmentSnapshot, collapsedSections, servedByRoom, hydrated]);
 
   useEffect(() => {
     setNurseServedCounts((prev) => {
@@ -342,9 +508,17 @@ function App() {
 
   const handleAssign = () => {
     if (!pendingAssignment) return;
-    const merged = mergeAssignments(assignmentSnapshot, pendingAssignment, nNurses, timezone, nurseServedCounts);
+    const merged = mergeAssignments(
+      assignmentSnapshot,
+      pendingAssignment,
+      nNurses,
+      timezone,
+      nurseServedCounts,
+      servedByRoom,
+    );
     setAssignmentSnapshot(merged.result);
     setNurseServedCounts(merged.updatedServedCounts);
+    setServedByRoom(merged.updatedServedByRoom);
   };
 
   const handleDragStart = (roomId: string) => {
@@ -355,8 +529,14 @@ function App() {
 
   const handleDropOnNurse = (nurseId: number) => {
     if (!draggingRoomId) return;
+    let updated = false;
+    let movedRoom: string | null = null;
     setAssignmentSnapshot((prev) => {
       if (!prev) return prev;
+      const target = prev.perRoom.find((room) => room.room === draggingRoomId);
+      if (!target || target.nurse_id === nurseId) return prev;
+      updated = true;
+      movedRoom = target.room;
       const perRoom = prev.perRoom.map((room) =>
         room.room === draggingRoomId ? { ...room, nurse_id: nurseId } : room,
       );
@@ -366,6 +546,9 @@ function App() {
       };
     });
     setDraggingRoomId(null);
+    if (updated && movedRoom) {
+      creditRoomForNurse(movedRoom, nurseId);
+    }
   };
 
   const summaryStats = useMemo(
@@ -508,6 +691,7 @@ function App() {
           const perNurse = buildNurseSummary(perRoom, nNurses, timezone);
           return { perRoom, perNurse };
         });
+        resetRoomHistory(roomId);
       }
     }
     setRows((prev) => {
@@ -517,6 +701,8 @@ function App() {
     });
   };
   const removeRow = (index: number) => {
+    const roomId = rows[index]?.room?.trim();
+    if (roomId) resetRoomHistory(roomId);
     setRows((prev) => {
       if (prev.length === 1) return [createEmptyRow()];
       return prev.filter((_, i) => i !== index);
@@ -569,6 +755,7 @@ function App() {
     setAssignmentSnapshot(null);
     setDischargeHistory([]);
     setNurseServedCounts(Array.from({ length: nNurses }, () => 0));
+    setServedByRoom({});
   };
 
   const loadTestData = () => {
@@ -576,6 +763,7 @@ function App() {
     setAssignmentSnapshot(null);
     setDischargeHistory([]);
     setNurseServedCounts(Array.from({ length: nNurses }, () => 0));
+    setServedByRoom({});
   };
 
   return (
@@ -588,182 +776,240 @@ function App() {
         <span className="persist-meta">{savedLabel}</span>
       </header>
 
-      <section className="panel highlight">
+      <section className="panel highlight collapsible">
         <div className="panel-head">
           <div>
             <h2>Rooms by nurse</h2>
             <p>Deterministic, fair distribution across {nNurses} nurse(s).</p>
           </div>
-        </div>
-        <div className="summary-grid">
-          {summaryStats.map((stat) => (
-            <div key={stat.label} className="stat-card">
-              <span className="stat-label">{stat.label}</span>
-              <span className="stat-value">{stat.value}</span>
-              <span className="stat-caption">{stat.caption}</span>
-            </div>
-          ))}
-        </div>
-        <div className="assign-actions">
           <button
             type="button"
-            onClick={handleAssign}
-            disabled={!pendingAssignment || !hasPendingChanges}
+            className="collapse-toggle"
+            aria-controls={sectionContentIds.rooms}
+            aria-expanded={!isSectionCollapsed('rooms')}
+            onClick={() => toggleSection('rooms')}
           >
-            Assign rooms
+            {isSectionCollapsed('rooms') ? 'Expand' : 'Collapse'}
+            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('rooms')} />
           </button>
-          {!pendingAssignment && (
-            <span className="assign-hint">Enter valid rooms to enable assignments.</span>
-          )}
-          {pendingAssignment && !hasPendingChanges && activeAssignments && (
-            <span className="assign-hint">Assignments are up to date.</span>
-          )}
         </div>
-        {activeAssignments && (
-          <div className="export-actions">
-            <button type="button" onClick={exportTablesAsCsv}>
-              Export tables (CSV)
-            </button>
-            <button type="button" className="ghost-button" onClick={generateAssignmentsReport}>
-              Generate report
-            </button>
+        <div
+          id={sectionContentIds.rooms}
+          className={`panel-content ${isSectionCollapsed('rooms') ? 'collapsed' : ''}`}
+          aria-hidden={isSectionCollapsed('rooms')}
+        >
+          <div className="summary-grid">
+            {summaryStats.map((stat) => (
+              <div key={stat.label} className="stat-card">
+                <span className="stat-label">{stat.label}</span>
+                <span className="stat-value">{stat.value}</span>
+                <span className="stat-caption">{stat.caption}</span>
+              </div>
+            ))}
           </div>
-        )}
-        {activeAssignments ? (
-          <div className="card-grid">
-            {activeAssignments.perNurse.map((row) => {
-              const roomsForNurse = activeAssignments.perRoom.filter(
-                (room) => room.nurse_id === row.nurse_id,
-              );
-              return (
-                <article
-                  key={`nurse-card-${row.nurse_id}`}
-                  className={`nurse-card ${draggingRoomId ? 'drag-ready' : ''}`}
-                  onDragOver={(e) => {
-                    if (draggingRoomId) {
+          <div className="assign-actions">
+            <button
+              type="button"
+              onClick={handleAssign}
+              disabled={!pendingAssignment || !hasPendingChanges}
+            >
+              Assign rooms
+            </button>
+            {!pendingAssignment && (
+              <span className="assign-hint">Enter valid rooms to enable assignments.</span>
+            )}
+            {pendingAssignment && !hasPendingChanges && activeAssignments && (
+              <span className="assign-hint">Assignments are up to date.</span>
+            )}
+          </div>
+          {activeAssignments && (
+            <div className="export-actions">
+              <button type="button" onClick={exportTablesAsCsv}>
+                Export tables (CSV)
+              </button>
+              <button type="button" className="ghost-button" onClick={generateAssignmentsReport}>
+                Generate report
+              </button>
+            </div>
+          )}
+          {activeAssignments ? (
+            <div className="card-grid">
+              {activeAssignments.perNurse.map((row) => {
+                const roomsForNurse = activeAssignments.perRoom.filter(
+                  (room) => room.nurse_id === row.nurse_id,
+                );
+                return (
+                  <article
+                    key={`nurse-card-${row.nurse_id}`}
+                    className={`nurse-card ${draggingRoomId ? 'drag-ready' : ''}`}
+                    onDragOver={(e) => {
+                      if (draggingRoomId) {
+                        e.preventDefault();
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (!draggingRoomId) return;
                       e.preventDefault();
-                    }
-                  }}
-                  onDrop={(e) => {
-                    if (!draggingRoomId) return;
-                    e.preventDefault();
-                    handleDropOnNurse(row.nurse_id);
-                  }}
-                >
-                  <header>
-                    <h3>Nurse {row.nurse_id}</h3>
-                    <span className="badge">{row.n_rooms} room(s)</span>
-                  </header>
-                  <p className="card-meta">
-                    Oldest rank: {row.oldest_rank_received ?? '—'} • Youngest rank: {row.youngest_rank_received ?? '—'}
-                  </p>
-                  <div className="assigned-list">
-                    {roomsForNurse.length > 0 ? (
-                      roomsForNurse.map((room) => (
-                        <span
-                          key={`${row.nurse_id}-${room.room}-${room.rank_oldest}`}
-                          className={`tag-pill draggable ${draggingRoomId === room.room ? 'dragging' : ''}`}
-                          data-color={badgeClassForRoom(room)}
-                          draggable
-                          data-tooltip={describeRoom(room, timezone)}
-                          onDragStart={() => handleDragStart(room.room)}
-                          onDragEnd={handleDragEnd}
-                        >
-                          {room.room} ({formatClock(room.time, timezone)})
-                        </span>
-                      ))
-                    ) : (
-                      <span className="muted">No rooms assigned</span>
-                    )}
-                  </div>
+                      handleDropOnNurse(row.nurse_id);
+                    }}
+                  >
+                    <header>
+                      <h3>Nurse {row.nurse_id}</h3>
+                      <span className="badge">{row.n_rooms} room(s)</span>
+                    </header>
+                    <p className="card-meta">
+                      Oldest rank: {row.oldest_rank_received ?? '—'} • Youngest rank: {row.youngest_rank_received ?? '—'}
+                    </p>
+                    <div className="assigned-list">
+                      {roomsForNurse.length > 0 ? (
+                        roomsForNurse.map((room) => (
+                          <span
+                            key={`${row.nurse_id}-${room.room}-${room.rank_oldest}`}
+                            className={`tag-pill draggable ${draggingRoomId === room.room ? 'dragging' : ''}`}
+                            data-color={badgeClassForRoom(room)}
+                            draggable
+                            data-tooltip={describeRoom(room, timezone)}
+                            onDragStart={() => handleDragStart(room.room)}
+                            onDragEnd={handleDragEnd}
+                          >
+                            {room.room} ({formatClock(room.time, timezone)})
+                          </span>
+                        ))
+                      ) : (
+                        <span className="muted">No rooms assigned</span>
+                      )}
+                    </div>
                   {dischargeHistory.filter((event) => event.nurseId === row.nurse_id).length > 0 && (
                     <div className="assigned-list discharged">
                       {dischargeHistory
                         .filter((event) => event.nurseId === row.nurse_id)
-                        .map((event) => (
-                          <span key={event.id} className="tag-pill discharged">
-                            {event.label}
-                          </span>
-                        ))}
+                        .map((event) => {
+                          const timeLabel = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                          return (
+                            <span
+                              key={event.id}
+                              className="tag-pill discharged"
+                              data-tooltip={`Discharged at ${timeLabel}`}
+                              aria-label={`${event.label} discharged at ${timeLabel}`}
+                            >
+                              <span className="pill-text">{event.label}</span>
+                              <span className="pill-time" aria-hidden="true">{timeLabel}</span>
+                            </span>
+                          );
+                        })}
                     </div>
                   )}
-                  <footer>
-                    {labelColumns.map((col) => {
-                      const countKey = `n_${col.key}` as LabelCountKey;
-                      const value = row[countKey];
-                      if (!value) return null;
-                      const roomList = roomsForNurse
-                        .filter((room) => room[col.key] === 'Y')
-                        .map((room) => `${room.room} (${formatClock(room.time, timezone)})`)
-                        .join(', ');
-                      return (
-                        <span
-                          key={`${row.nurse_id}-${col.key}`}
-                          className="count-pill"
-                          data-tooltip={roomList || 'No rooms'}
-                        >
-                          {col.label}: {value}
-                        </span>
-                      );
-                    })}
-                  </footer>
-                </article>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="muted">Enter rooms and select “Assign rooms” to generate the distribution.</p>
-        )}
+                    <footer>
+                      {labelColumns.map((col) => {
+                        const countKey = `n_${col.key}` as LabelCountKey;
+                        const value = row[countKey];
+                        if (!value) return null;
+                        const roomList = roomsForNurse
+                          .filter((room) => room[col.key] === 'Y')
+                          .map((room) => `${room.room} (${formatClock(room.time, timezone)})`)
+                          .join(', ');
+                        return (
+                          <span
+                            key={`${row.nurse_id}-${col.key}`}
+                            className="count-pill"
+                            data-tooltip={roomList || 'No rooms'}
+                          >
+                            {col.label}: {value}
+                          </span>
+                        );
+                      })}
+                    </footer>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">Enter rooms and select “Assign rooms” to generate the distribution.</p>
+          )}
+        </div>
       </section>
 
       {activeAssignments && (
-        <section className="panel">
-          <h2>Per-room assignments</h2>
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Nurse</th>
-                  <th>Room</th>
-                  <th>Time</th>
-                  <th>Rank (oldest)</th>
-                  <th>Rank (youngest)</th>
-                  {labelColumns.map((col) => (
-                    <th key={`room-${col.key}`} title={col.description}>{col.label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {activeAssignments.perRoom.map((room) => (
-                  <tr key={`${room.nurse_id}-${room.room}-${room.rank_oldest}`}>
-                    <td data-label="Nurse">{room.nurse_id}</td>
-                    <td data-label="Room">{room.room}</td>
-                    <td data-label="Time">{formatClock(room.time, timezone)}</td>
-                    <td data-label="Rank (oldest)">{room.rank_oldest}</td>
-                    <td data-label="Rank (youngest)">{room.rank_youngest}</td>
+        <section className="panel collapsible">
+          <div className="panel-head">
+            <h2>Per-room assignments</h2>
+            <button
+              type="button"
+              className="collapse-toggle"
+              aria-controls={sectionContentIds.perRoom}
+              aria-expanded={!isSectionCollapsed('perRoom')}
+              onClick={() => toggleSection('perRoom')}
+            >
+              {isSectionCollapsed('perRoom') ? 'Expand' : 'Collapse'}
+              <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('perRoom')} />
+            </button>
+          </div>
+          <div
+            id={sectionContentIds.perRoom}
+            className={`panel-content ${isSectionCollapsed('perRoom') ? 'collapsed' : ''}`}
+            aria-hidden={isSectionCollapsed('perRoom')}
+          >
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Nurse</th>
+                    <th>Room</th>
+                    <th>Time</th>
+                    <th>Rank (oldest)</th>
+                    <th>Rank (youngest)</th>
                     {labelColumns.map((col) => (
-                      <td key={`${room.room}-${col.key}`} data-label={col.label}>
-                        {room[col.key] === 'Y' ? 'Y' : ''}
-                      </td>
+                      <th key={`room-${col.key}`} title={col.description}>{col.label}</th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {activeAssignments.perRoom.map((room) => (
+                    <tr key={`${room.nurse_id}-${room.room}-${room.rank_oldest}`}>
+                      <td data-label="Nurse">{room.nurse_id}</td>
+                      <td data-label="Room">{room.room}</td>
+                      <td data-label="Time">{formatClock(room.time, timezone)}</td>
+                      <td data-label="Rank (oldest)">{room.rank_oldest}</td>
+                      <td data-label="Rank (youngest)">{room.rank_youngest}</td>
+                      {labelColumns.map((col) => (
+                        <td key={`${room.room}-${col.key}`} data-label={col.label}>
+                          {room[col.key] === 'Y' ? 'Y' : ''}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       )}
 
-      <section className="panel controls-panel">
+      <section className="panel controls-panel collapsible">
         <div className="panel-head">
           <h2>Controls & data entry</h2>
+          <button
+            type="button"
+            className="collapse-toggle"
+            aria-controls={sectionContentIds.controls}
+            aria-expanded={!isSectionCollapsed('controls')}
+            onClick={() => toggleSection('controls')}
+          >
+            {isSectionCollapsed('controls') ? 'Expand' : 'Collapse'}
+            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('controls')} />
+          </button>
         </div>
-        <div className="controls-grid">
-          <label>
-            <span>Number of nurses</span>
-            <input
-              type="number"
-              min={1}
+        <div
+          id={sectionContentIds.controls}
+          className={`panel-content ${isSectionCollapsed('controls') ? 'collapsed' : ''}`}
+          aria-hidden={isSectionCollapsed('controls')}
+        >
+          <div className="controls-grid">
+            <label>
+              <span>Number of nurses</span>
+              <input
+                type="number"
+                min={1}
               value={nNurses}
               onChange={(e) => setNNurses(Math.max(1, Number(e.target.value) || 1))}
             />
@@ -776,14 +1022,14 @@ function App() {
               onChange={(e) => setTimezone(e.target.value)}
               placeholder="e.g., America/Toronto"
             />
-          </label>
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={addRow}>Add row</button>
-          <button type="button" onClick={clearTable} className="secondary">Clear table</button>
-          <button type="button" onClick={loadTestData} className="ghost-button">Load test data</button>
-        </div>
-        <p className="help-text">Time format: HH:MM (24-hour). Tags are not mutually exclusive, but avoid flagging both under_24 and over_24.</p>
+            </label>
+          </div>
+          <div className="button-row">
+            <button type="button" onClick={addRow}>Add row</button>
+            <button type="button" onClick={clearTable} className="secondary">Clear table</button>
+            <button type="button" onClick={loadTestData} className="ghost-button">Load test data</button>
+          </div>
+          <p className="help-text">Time format: HH:MM (24-hour). Tags are not mutually exclusive, but avoid flagging both under_24 and over_24.</p>
         <div
           className={`validation ${validationMessages.length === 0 ? 'ok' : 'error'}`}
           role="status"
@@ -811,136 +1057,174 @@ function App() {
             </ul>
           </div>
         )}
+        </div>
       </section>
 
       {dischargeHistory.length > 0 && (
-        <section className="panel">
-          <h2>Discharge log</h2>
-          <ul className="discharge-log">
-            {dischargeHistory.slice(0, 10).map((event) => (
-              <li key={event.id}>
-                <span className="log-room">{event.label}</span>
-                <span className="log-time">{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-              </li>
-            ))}
-          </ul>
+        <section className="panel collapsible">
+          <div className="panel-head">
+            <h2>Discharge log</h2>
+            <button
+              type="button"
+              className="collapse-toggle"
+              aria-controls={sectionContentIds.dischargeLog}
+              aria-expanded={!isSectionCollapsed('dischargeLog')}
+              onClick={() => toggleSection('dischargeLog')}
+            >
+              {isSectionCollapsed('dischargeLog') ? 'Expand' : 'Collapse'}
+              <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('dischargeLog')} />
+            </button>
+          </div>
+          <div
+            id={sectionContentIds.dischargeLog}
+            className={`panel-content ${isSectionCollapsed('dischargeLog') ? 'collapsed' : ''}`}
+            aria-hidden={isSectionCollapsed('dischargeLog')}
+          >
+            <ul className="discharge-log">
+              {dischargeHistory.slice(0, 10).map((event) => (
+                <li key={event.id}>
+                  <span className="log-room">{event.label}</span>
+                  <span className="log-time">{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
       )}
 
-      <section className="panel">
-        <h2>Runtime input table (only occupied rooms)</h2>
-        <div className="table-scroll">
-          <table className="input-table">
-            <thead>
-              <tr>
-                <th>Room</th>
-                <th>Time (HH:MM)</th>
-                {labelColumns.map((col) => (
-                  <th key={col.key} title={col.description}>{col.label}</th>
-                ))}
-                <th>Status</th>
-                <th aria-label="Row actions">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows
-                .map((row, idx) => ({ row, idx }))
-                .sort((a, b) => {
-                  const aKey = a.row.room ? canonicalRooms.indexOf(a.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
-                  const bKey = b.row.room ? canonicalRooms.indexOf(b.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
-                  return aKey - bKey;
-                })
-                .map(({ row, idx }) => {
-                const meta = parseStateFresh ? rowMeta.get(idx) : undefined;
-                const roomInvalid = !!meta?.room && !meta.roomOk;
-                const timeInvalid = !!meta?.time && !meta.timeOk;
-                const cautionText = parseStateFresh ? cautionByRow.get(idx) : undefined;
-                return (
-                  <tr key={`row-${idx}`}>
-                    <td data-label="Room">
-                      <select
-                        value={row.room}
-                        onChange={(e) => updateRowField(idx, 'room', e.target.value)}
-                        className={roomInvalid ? 'invalid' : ''}
-                      >
-                        <option value="">Select...</option>
-                        {canonicalRooms
-                          .filter((roomOption) => !assignedRoomsSet.has(roomOption) || row.room === roomOption)
-                          .map((roomOption) => (
-                            <option key={roomOption} value={roomOption}>
-                              {roomOption}
-                            </option>
-                          ))}
-                      </select>
-                    </td>
-                    <td data-label="Time">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="HH:MM"
-                        value={row.time}
-                        onChange={(e) => updateRowField(idx, 'time', e.target.value)}
-                        className={timeInvalid ? 'invalid' : ''}
-                      />
-                    </td>
-                    {labelColumns.map((col) => (
-                      <td key={`${col.key}-${idx}`} data-label={col.label}>
-                        <label className="checkbox" title={col.description}>
-                          <input
-                            type="checkbox"
-                            checked={row[col.key]}
-                            onChange={(e) => updateRowField(idx, col.key, e.target.checked)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                updateRowField(idx, col.key, !row[col.key]);
-                              }
-                            }}
-                          />
-                          <span className="sr-only">{col.label}</span>
-                        </label>
+      <section className="panel collapsible">
+        <div className="panel-head">
+          <h2>Runtime input table (only occupied rooms)</h2>
+          <button
+            type="button"
+            className="collapse-toggle"
+            aria-controls={sectionContentIds.runtimeTable}
+            aria-expanded={!isSectionCollapsed('runtimeTable')}
+            onClick={() => toggleSection('runtimeTable')}
+          >
+            {isSectionCollapsed('runtimeTable') ? 'Expand' : 'Collapse'}
+            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('runtimeTable')} />
+          </button>
+        </div>
+        <div
+          id={sectionContentIds.runtimeTable}
+          className={`panel-content ${isSectionCollapsed('runtimeTable') ? 'collapsed' : ''}`}
+          aria-hidden={isSectionCollapsed('runtimeTable')}
+        >
+          <div className="table-scroll">
+            <table className="input-table">
+              <thead>
+                <tr>
+                  <th>Room</th>
+                  <th>Time (HH:MM)</th>
+                  {labelColumns.map((col) => (
+                    <th key={col.key} title={col.description}>{col.label}</th>
+                  ))}
+                  <th>Status</th>
+                  <th aria-label="Row actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows
+                  .map((row, idx) => ({ row, idx }))
+                  .sort((a, b) => {
+                    const aKey = a.row.room ? canonicalRooms.indexOf(a.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
+                    const bKey = b.row.room ? canonicalRooms.indexOf(b.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
+                    return aKey - bKey;
+                  })
+                  .map(({ row, idx }) => {
+                  const meta = parseStateFresh ? rowMeta.get(idx) : undefined;
+                  const roomInvalid = !!meta?.room && !meta.roomOk;
+                  const timeInvalid = !!meta?.time && !meta.timeOk;
+                  const cautionText = parseStateFresh ? cautionByRow.get(idx) : undefined;
+                  return (
+                    <tr key={`row-${idx}`}>
+                      <td data-label="Room">
+                        <select
+                          value={row.room}
+                          onChange={(e) => updateRowField(idx, 'room', e.target.value)}
+                          className={roomInvalid ? 'invalid' : ''}
+                        >
+                          <option value="">Select...</option>
+                          {canonicalRooms
+                            .filter((roomOption) => !assignedRoomsSet.has(roomOption) || row.room === roomOption)
+                            .map((roomOption) => (
+                              <option key={roomOption} value={roomOption}>
+                                {roomOption}
+                              </option>
+                            ))}
+                        </select>
                       </td>
-                    ))}
-                    <td data-label="Status">
-                      {cautionText ? <span className="status-pill warning">Needs age tag</span> : <span className="status-pill ok">Ready</span>}
-                    </td>
-                    <td className="row-actions" data-label="Actions">
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => dischargeRow(idx)}
-                      >
-                        Discharge
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={!row.under_24}
-                        onClick={() => promoteToOver24(idx)}
-                      >
-                        Promote 24h
-                      </button>
-                      <button
-                        type="button"
-                        className={`ghost ${row.discharge ? 'active' : ''}`}
-                        onClick={() => togglePrepareDischarge(idx)}
-                      >
-                        Prep discharge
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost danger"
-                        onClick={() => removeRow(idx)}
-                        aria-label="Remove row"
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      <td data-label="Time">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="HH:MM"
+                          value={row.time}
+                          onChange={(e) => updateRowField(idx, 'time', e.target.value)}
+                          className={timeInvalid ? 'invalid' : ''}
+                        />
+                      </td>
+                      {labelColumns.map((col) => (
+                        <td key={`${col.key}-${idx}`} data-label={col.label} className="checkbox-cell">
+                          <label className="checkbox" title={col.description}>
+                            <span className="checkbox-caption" aria-hidden="true">{col.label}</span>
+                            <input
+                              type="checkbox"
+                              checked={row[col.key]}
+                              onChange={(e) => updateRowField(idx, col.key, e.target.checked)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  updateRowField(idx, col.key, !row[col.key]);
+                                }
+                              }}
+                            />
+                            <span className="sr-only">{col.label}</span>
+                          </label>
+                        </td>
+                      ))}
+                      <td data-label="Status">
+                        {cautionText ? <span className="status-pill warning">Needs age tag</span> : <span className="status-pill ok">Ready</span>}
+                      </td>
+                      <td className="row-actions" data-label="Actions">
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => dischargeRow(idx)}
+                        >
+                          Discharge
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={!row.under_24}
+                          onClick={() => promoteToOver24(idx)}
+                        >
+                          Promote 24h
+                        </button>
+                        <button
+                          type="button"
+                          className={`ghost ${row.discharge ? 'active' : ''}`}
+                          onClick={() => togglePrepareDischarge(idx)}
+                        >
+                          Prep discharge
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost danger"
+                          onClick={() => removeRow(idx)}
+                          aria-label="Remove row"
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>

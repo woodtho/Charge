@@ -101,6 +101,7 @@ function pickNurse(
   room: DerivedRoom,
   state: NurseState[],
   capacities: NurseCapacity[],
+  capacityMap: Map<number, number>,
 ): number {
   const candidates = state.filter((nurse) => nurse.remaining > 0);
   if (candidates.length === 0) {
@@ -108,7 +109,7 @@ function pickNurse(
   }
 
   const totalCapacity = capacities.reduce((sum, cap) => sum + cap.capacity, 0);
-  const meanCountTarget = totalCapacity / state.length;
+  const assignedSoFar = state.reduce((sum, nurse) => sum + nurse.nAssigned, 0);
   const totalLoad = state.reduce((sum, nurse) => sum + nurse.loadSum, 0);
   const meanLoadTarget = (totalLoad + room.wEffective) / state.length;
 
@@ -116,7 +117,11 @@ function pickNurse(
     .map((nurse) => {
       const projN = nurse.nAssigned + 1;
       const projLoad = nurse.loadSum + room.wEffective;
-      const baseScore = (projN - meanCountTarget) ** 2 + (projLoad - meanLoadTarget) ** 2;
+      const nurseCapacity = capacityMap.get(nurse.nurseId) ?? 0;
+      const capacityShare = nurseCapacity > 0 ? nurseCapacity / totalCapacity : 1 / state.length;
+      const projTotalAssigned = assignedSoFar + 1;
+      const projectedTarget = capacityShare * projTotalAssigned;
+      const baseScore = (projN - projectedTarget) ** 2 + (projLoad - meanLoadTarget) ** 2;
       const hasGroup = room.groupKey ? nurse.assignedGroups.has(room.groupKey) : false;
       const groupScore = hasGroup ? baseScore - 1e-3 : baseScore;
       const repeatPenalty =
@@ -179,6 +184,7 @@ function assignRoomsToState(
   state: NurseState[],
   capacities: NurseCapacity[],
 ): Map<string, number> {
+  const capacityMap = new Map(capacities.map((cap) => [cap.nurseId, cap.capacity]));
   const assignment = new Map<string, number>();
   let roundRobinIndex = 0;
 
@@ -187,7 +193,7 @@ function assignRoomsToState(
 
   const assignWithScoring = (room: DerivedRoom) => {
     if (assignment.has(room.room)) return;
-    const chosen = pickNurse(room, state, capacities);
+    const chosen = pickNurse(room, state, capacities, capacityMap);
     updateNurseState(chosen, room, state);
     assignment.set(room.room, chosen);
   };

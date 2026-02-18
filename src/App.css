@@ -55,6 +55,60 @@ header h1 {
   margin-bottom: 1rem;
 }
 
+.panel.collapsible .panel-head {
+  margin-bottom: 0.5rem;
+}
+
+.panel-content {
+  overflow: hidden;
+  max-height: 9999px;
+  opacity: 1;
+  transition: max-height 0.35s ease, opacity 0.3s ease;
+  margin-top: 0.75rem;
+}
+
+.panel-content.collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  margin-top: 0;
+}
+
+.collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #d0d7e6;
+  background: #f8fbff;
+  color: #1a3e72;
+  border-radius: 999px;
+  padding: 0.25rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.collapse-toggle:hover {
+  background: #e6f0ff;
+  border-color: #88b1ff;
+}
+
+.chevron {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+  margin-left: 0.1rem;
+}
+
+.chevron[data-collapsed='true'] {
+  transform: rotate(-135deg);
+}
+
 .persist-meta {
   font-size: 0.85rem;
   color: #5f6368;
@@ -275,6 +329,17 @@ button:not(:disabled):hover {
   height: 16px;
 }
 
+.checkbox-caption {
+  display: none;
+  font-size: 0.8rem;
+  color: #5f6368;
+  margin-right: 0.35rem;
+}
+
+.checkbox-cell {
+  position: relative;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -492,6 +557,12 @@ button:not(:disabled):hover {
   text-decoration: line-through;
   color: #a1a1a1;
   background: #f8f8f8;
+}
+
+.tag-pill.discharged .pill-time {
+  margin-left: 0.35rem;
+  font-size: 0.7rem;
+  color: #7a7a7a;
 }
 
 .count-pill {
@@ -722,6 +793,33 @@ body.dark .log-time {
   }
 
   .checkbox {
-    justify-content: flex-end;
+    width: 100%;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .checkbox-cell::before {
+    display: none;
+  }
+
+  .checkbox-caption {
+    display: inline-block;
+    flex: 1;
+    text-align: left;
+  }
+
+  .checkbox input {
+    margin-left: auto;
+  }
+
+  .tag-pill[data-tooltip]::before,
+  .tag-pill[data-tooltip]::after {
+    display: none;
+  }
+
+  .tag-pill.discharged .pill-time {
+    display: block;
+    margin-left: 0;
+    margin-top: 0.1rem;
   }
 }
