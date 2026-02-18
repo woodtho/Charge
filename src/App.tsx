@@ -159,6 +159,14 @@ const TEST_ROWS: RoomRow[] = [
   makeSampleRow('16-2', '12:25', { under_24: true, vag: true }),
 ];
 
+const isCanonicalRoom = (room: string): room is (typeof canonicalRooms)[number] => {
+  return canonicalRooms.includes(room as (typeof canonicalRooms)[number]);
+};
+
+const isCanonicalRoom = (room: string): room is (typeof canonicalRooms)[number] => {
+  return canonicalRooms.includes(room as (typeof canonicalRooms)[number]);
+};
+
 const formatCompactTimeInput = (value: string): string | null => {
   const trimmed = value.trim();
   if (!/^\d{3,4}$/.test(trimmed)) return null;
@@ -360,7 +368,7 @@ function App() {
   });
   const [mobileCollapsedRows, setMobileCollapsedRows] = useState<Record<number, boolean>>({});
   const [roomPickerOpen, setRoomPickerOpen] = useState(false);
-  const [roomPickerSelection, setRoomPickerSelection] = useState<string[]>([]);
+  const [roomPickerSelection, setRoomPickerSelection] = useState<(typeof canonicalRooms)[number][]>([]);
   const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
   const toggleSection = (key: SectionKey) => {
     setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -507,8 +515,12 @@ function App() {
     if (!assignmentSnapshot) return new Set<string>();
     return new Set(assignmentSnapshot.perRoom.map((room) => room.room));
   }, [assignmentSnapshot]);
-  const availableRooms = useMemo(() => {
-    const taken = new Set(rows.map((row) => row.room).filter((room): room is string => Boolean(room)));
+  const availableRooms = useMemo<(typeof canonicalRooms)[number][]>(() => {
+    const taken = new Set(
+      rows
+        .map((row) => row.room)
+        .filter((room): room is (typeof canonicalRooms)[number] => Boolean(room) && isCanonicalRoom(room)),
+    );
     return canonicalRooms.filter((room) => !taken.has(room));
   }, [rows]);
   const dischargeSummary = useMemo(() => {
@@ -843,7 +855,7 @@ function App() {
       [index]: !prev[index],
     }));
   };
-  const toggleRoomPickerSelection = (room: string) => {
+  const toggleRoomPickerSelection = (room: (typeof canonicalRooms)[number]) => {
     setRoomPickerSelection((prev) => {
       if (prev.includes(room)) {
         return prev.filter((item) => item !== room);
