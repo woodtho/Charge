@@ -354,6 +354,13 @@ function App() {
     const attr = document.documentElement?.dataset.theme;
     return attr === 'dark' || attr === 'light' ? (attr as ThemeMode) : 'dark';
   });
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(max-width: 640px)').matches;
+  });
+  const [mobileCollapsedRows, setMobileCollapsedRows] = useState<Record<number, boolean>>({});
+  const [roomPickerOpen, setRoomPickerOpen] = useState(false);
+  const [roomPickerSelection, setRoomPickerSelection] = useState<string[]>([]);
   const isSectionCollapsed = (key: SectionKey) => collapsedSections[key];
   const toggleSection = (key: SectionKey) => {
     setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -500,6 +507,10 @@ function App() {
     if (!assignmentSnapshot) return new Set<string>();
     return new Set(assignmentSnapshot.perRoom.map((room) => room.room));
   }, [assignmentSnapshot]);
+  const availableRooms = useMemo(() => {
+    const taken = new Set(rows.map((row) => row.room).filter((room): room is string => Boolean(room)));
+    return canonicalRooms.filter((room) => !taken.has(room));
+  }, [rows]);
   const dischargeSummary = useMemo(() => {
     const map = new Map<number, number>();
     dischargeHistory.forEach((event) => {
@@ -564,6 +575,29 @@ function App() {
       document.body.dataset.theme = theme;
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mediaQuery = window.matchMedia('(max-width: 640px)');
+    const updateMatch = () => setIsMobileViewport(mediaQuery.matches);
+    updateMatch();
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateMatch);
+      return () => mediaQuery.removeEventListener('change', updateMatch);
+    }
+    mediaQuery.addListener(updateMatch);
+    return () => mediaQuery.removeListener(updateMatch);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setMobileCollapsedRows({});
+    }
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    setRoomPickerSelection((prev) => prev.filter((room) => availableRooms.includes(room)));
+  }, [availableRooms]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
@@ -803,6 +837,35 @@ function App() {
       updateRowField(index, 'time', formatted);
     }
   };
+  const toggleMobileRowCollapse = (index: number) => {
+    setMobileCollapsedRows((prev) => ({
+      ...prev,
+      [index]: !prev[index],
+    }));
+  };
+  const toggleRoomPickerSelection = (room: string) => {
+    setRoomPickerSelection((prev) => {
+      if (prev.includes(room)) {
+        return prev.filter((item) => item !== room);
+      }
+      return [...prev, room];
+    });
+  };
+  const clearRoomPickerSelection = () => setRoomPickerSelection([]);
+  const addRoomsFromPicker = () => {
+    const validRooms = roomPickerSelection.filter((room) => availableRooms.includes(room));
+    if (validRooms.length === 0) return;
+    setRows((prev) => [
+      ...prev,
+      ...validRooms.map((room) => {
+        const newRow = createEmptyRow();
+        newRow.room = room;
+        return newRow;
+      }),
+    ]);
+    setRoomPickerSelection([]);
+    setRoomPickerOpen(false);
+  };
 
   const addRow = () => setRows((prev) => [...prev, createEmptyRow()]);
   const dischargeRow = (index: number) => {
@@ -924,6 +987,349 @@ function App() {
         <strong>Quick guide</strong>
         <p>Document every occupied room exactly once, wait for the status banner to read <em>Validation ready</em>, then run <em>Assign rooms</em>. Hover or tap any room pill to read the tags, drag to rebalance when needed, and rely on the discharge log for audit history.</p>
       </div>
+
+      <section className="panel controls-panel collapsible">
+        <div className="panel-head">
+          <div>
+            <h2>Controls & data entry</h2>
+            <p className="panel-subtext">Start here: set nurse count, timezone, and capture any rooms missing from the census.</p>
+          </div>
+          <button
+            type="button"
+            className="collapse-toggle"
+            aria-controls={sectionContentIds.controls}
+            aria-expanded={!isSectionCollapsed('controls')}
+            onClick={() => toggleSection('controls')}
+          >
+            {isSectionCollapsed('controls') ? 'Expand' : 'Collapse'}
+            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('controls')} />
+          </button>
+        </div>
+        <div
+          id={sectionContentIds.controls}
+          className={`panel-content ${isSectionCollapsed('controls') ? 'collapsed' : ''}`}
+          aria-hidden={isSectionCollapsed('controls')}
+        >
+          <div className="controls-grid">
+            <label>
+              <span>Number of nurses</span>
+              <input
+                type="number"
+                min={1}
+                value={nNurses}
+                onChange={(e) => setNNurses(Math.max(1, Number(e.target.value) || 1))}
+              />
+            </label>
+            <label>
+              <span>Timezone (single, consistent)</span>
+              <input
+                type="text"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                placeholder="e.g., America/Toronto"
+              />
+            </label>
+          </div>
+          <div className="button-row">
+            <button type="button" onClick={addRow}>Add patient row</button>
+            <button type="button" onClick={clearTable} className="secondary">Clear all rows</button>
+            <button type="button" onClick={loadTestData} className="ghost-button">Insert sample census</button>
+          </div>
+          <div className="room-picker">
+            <div className="room-picker-head">
+              <span>Need to add specific rooms that still need documentation?</span>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setRoomPickerOpen((prev) => !prev)}
+              >
+                {roomPickerOpen ? 'Hide room selector' : 'Select rooms'}
+              </button>
+            </div>
+            {roomPickerOpen && (
+              <div className="room-picker-panel">
+                <p className="panel-subtext">Choose the rooms without entries yet and we will create blank rows for you.</p>
+                {availableRooms.length > 0 ? (
+                  <>
+                    <div className="room-picker-grid" role="group" aria-label="Available rooms to add">
+                      {availableRooms.map((room) => {
+                        const selected = roomPickerSelection.includes(room);
+                        return (
+                          <button
+                            key={`room-chip-${room}`}
+                            type="button"
+                            className={`room-chip ${selected ? 'selected' : ''}`}
+                            onClick={() => toggleRoomPickerSelection(room)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                toggleRoomPickerSelection(room);
+                              }
+                            }}
+                            aria-pressed={selected}
+                          >
+                            <span className="room-chip-name">{room}</span>
+                            <span className="room-chip-state">{selected ? 'Selected' : 'Tap to add'}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="room-picker-actions">
+                      <button
+                        type="button"
+                        onClick={addRoomsFromPicker}
+                        disabled={roomPickerSelection.length === 0}
+                      >
+                        Add {roomPickerSelection.length || ''} selected room{roomPickerSelection.length === 1 ? '' : 's'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={clearRoomPickerSelection}
+                        disabled={roomPickerSelection.length === 0}
+                      >
+                        Clear selection
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted">All rooms on the roster already have rows.</p>
+                )}
+              </div>
+            )}
+          </div>
+          <p className="help-text">Keep exactly one entry per occupied room. Capture HH:MM based on the configured timezone and tag only one of the under/over 24h options.</p>
+          <div
+            className={`validation ${validationMessages.length === 0 ? 'ok' : 'error'}`}
+            role="status"
+            aria-live="polite"
+          >
+            {validationMessages.length === 0 ? (
+              <span>Validation ready: all blocking checks have passed.</span>
+            ) : (
+              <div>
+                <strong>Please resolve these blocking items:</strong>
+                <ul>
+                  {validationMessages.map((msg) => (
+                    <li key={msg}>{msg}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+          {warnings.length > 0 && (
+            <div className="warning-box">
+              <ul>
+                {warnings.map((msg) => (
+                  <li key={msg}>{msg}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel collapsible">
+        <div className="panel-head">
+          <h2>Active patient list</h2>
+          <p className="panel-subtext">Maintain a single row per occupied room. Assign times when the patient first required care under this nurse team.</p>
+          <button
+            type="button"
+            className="collapse-toggle"
+            aria-controls={sectionContentIds.runtimeTable}
+            aria-expanded={!isSectionCollapsed('runtimeTable')}
+            onClick={() => toggleSection('runtimeTable')}
+          >
+            {isSectionCollapsed('runtimeTable') ? 'Expand' : 'Collapse'}
+            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('runtimeTable')} />
+          </button>
+        </div>
+        <div
+          id={sectionContentIds.runtimeTable}
+          className={`panel-content ${isSectionCollapsed('runtimeTable') ? 'collapsed' : ''}`}
+          aria-hidden={isSectionCollapsed('runtimeTable')}
+        >
+          <div className="table-scroll">
+            <table className="input-table">
+              <thead>
+                <tr>
+                  <th>Room</th>
+                  <th>Time (HH:MM)</th>
+                  {labelColumns.map((col) => (
+                    <th key={col.key} title={col.description}>{col.label}</th>
+                  ))}
+                  <th>Status</th>
+                  <th aria-label="Row actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows
+                  .map((row, idx) => ({ row, idx }))
+                  .sort((a, b) => {
+                    const aKey = a.row.room ? canonicalRooms.indexOf(a.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
+                    const bKey = b.row.room ? canonicalRooms.indexOf(b.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
+                    return aKey - bKey;
+                  })
+                  .map(({ row, idx }) => {
+                  const meta = parseStateFresh ? rowMeta.get(idx) : undefined;
+                  const roomInvalid = !!meta?.room && !meta.roomOk;
+                  const timeInvalid = !!meta?.time && !meta.timeOk;
+                  const cautionText = parseStateFresh ? cautionByRow.get(idx) : undefined;
+                  const isMobileCollapsed = isMobileViewport && mobileCollapsedRows[idx];
+                  const summaryRoomLabel = row.room || 'Room pending';
+                  const summaryTimeLabel = row.time || '--:--';
+                  const summaryStatusLabel = cautionText ? 'Needs age tag' : 'Ready';
+                  return (
+                    <tr key={`row-${idx}`} className={isMobileCollapsed ? 'mobile-collapsed' : undefined}>
+                      <td
+                        data-label="Room"
+                        className={
+                          isMobileViewport ? `mobile-summary ${isMobileCollapsed ? 'is-collapsed' : ''}` : undefined
+                        }
+                      >
+                        {isMobileViewport ? (
+                          <>
+                            <div className="mobile-summary-head">
+                              <div className="mobile-summary-info">
+                                <span className="mobile-summary-title">{summaryRoomLabel}</span>
+                                <span className="mobile-summary-sub">{summaryTimeLabel}</span>
+                              </div>
+                              <div className="mobile-summary-actions">
+                                <span className={`mobile-summary-status ${cautionText ? 'warn' : 'ok'}`}>
+                                  {summaryStatusLabel}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="mobile-collapse-toggle"
+                                  onClick={() => toggleMobileRowCollapse(idx)}
+                                  aria-expanded={!isMobileCollapsed}
+                                >
+                                  <span className="sr-only">
+                                    {isMobileCollapsed ? 'Expand details' : 'Collapse details'}
+                                  </span>
+                                  <span className="mobile-collapse-label" aria-hidden="true">
+                                    {isMobileCollapsed ? 'Show' : 'Hide'}
+                                  </span>
+                                  <span
+                                    className="chevron chevron-small"
+                                    data-collapsed={isMobileCollapsed}
+                                    aria-hidden="true"
+                                  />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mobile-summary-fields">
+                              <label htmlFor={`room-select-${idx}`} className="mobile-summary-label">
+                                Room
+                              </label>
+                              <select
+                                id={`room-select-${idx}`}
+                                value={row.room}
+                                onChange={(e) => updateRowField(idx, 'room', e.target.value)}
+                                className={roomInvalid ? 'invalid' : ''}
+                              >
+                                <option value="">Choose room...</option>
+                                {canonicalRooms
+                                  .filter((roomOption) => !assignedRoomsSet.has(roomOption) || row.room === roomOption)
+                                  .map((roomOption) => (
+                                    <option key={roomOption} value={roomOption}>
+                                      {roomOption}
+                                    </option>
+                                  ))}
+                              </select>
+                            </div>
+                          </>
+                        ) : (
+                          <select
+                            value={row.room}
+                            onChange={(e) => updateRowField(idx, 'room', e.target.value)}
+                            className={roomInvalid ? 'invalid' : ''}
+                          >
+                            <option value="">Choose room...</option>
+                            {canonicalRooms
+                              .filter((roomOption) => !assignedRoomsSet.has(roomOption) || row.room === roomOption)
+                              .map((roomOption) => (
+                                <option key={roomOption} value={roomOption}>
+                                  {roomOption}
+                                </option>
+                              ))}
+                          </select>
+                        )}
+                      </td>
+                      <td data-label="Time">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="HH:MM"
+                          value={row.time}
+                          onChange={(e) => updateRowField(idx, 'time', e.target.value)}
+                          onBlur={(e) => handleTimeBlur(idx, e.target.value)}
+                          className={timeInvalid ? 'invalid' : ''}
+                        />
+                      </td>
+                      {labelColumns.map((col) => (
+                        <td key={`${col.key}-${idx}`} data-label={col.label} className="checkbox-cell">
+                          <label className="checkbox" title={col.description}>
+                            <span className="checkbox-caption" aria-hidden="true">{col.label}</span>
+                            <input
+                              type="checkbox"
+                              checked={row[col.key]}
+                              onChange={(e) => updateRowField(idx, col.key, e.target.checked)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  updateRowField(idx, col.key, !row[col.key]);
+                                }
+                              }}
+                            />
+                            <span className="sr-only">{col.label}</span>
+                          </label>
+                        </td>
+                      ))}
+                      <td data-label="Status">
+                        {cautionText ? <span className="status-pill warning">Add age tag</span> : <span className="status-pill ok">Ready</span>}
+                      </td>
+                      <td className="row-actions" data-label="Actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => dischargeRow(idx)}
+                      >
+                        Discharge now
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={!row.under_24}
+                        onClick={() => promoteToOver24(idx)}
+                      >
+                        Promote to &gt;24h
+                      </button>
+                      <button
+                        type="button"
+                        className={`ghost ${row.discharge ? 'active' : ''}`}
+                        onClick={() => togglePrepareDischarge(idx)}
+                      >
+                        Toggle discharge prep
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost danger"
+                        onClick={() => removeRow(idx)}
+                        aria-label="Remove row"
+                      >
+                        Delete entry
+                      </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="help-text">List only current patients. Use the row actions to log discharges, promote age status, or flag a pending discharge without losing the original assignment.</p>
+        </div>
+      </section>
 
       <section className="panel highlight collapsible">
         <div className="panel-head">
@@ -1146,83 +1552,7 @@ function App() {
         </section>
       )}
 
-      <section className="panel controls-panel collapsible">
-        <div className="panel-head">
-          <div>
-            <h2>Controls & data entry</h2>
-            <p className="panel-subtext">Set staffing context first; all entries autosave locally for reliable recoveries.</p>
-          </div>
-          <button
-            type="button"
-            className="collapse-toggle"
-            aria-controls={sectionContentIds.controls}
-            aria-expanded={!isSectionCollapsed('controls')}
-            onClick={() => toggleSection('controls')}
-          >
-            {isSectionCollapsed('controls') ? 'Expand' : 'Collapse'}
-            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('controls')} />
-          </button>
-        </div>
-        <div
-          id={sectionContentIds.controls}
-          className={`panel-content ${isSectionCollapsed('controls') ? 'collapsed' : ''}`}
-          aria-hidden={isSectionCollapsed('controls')}
-        >
-          <div className="controls-grid">
-            <label>
-              <span>Number of nurses</span>
-              <input
-                type="number"
-                min={1}
-              value={nNurses}
-              onChange={(e) => setNNurses(Math.max(1, Number(e.target.value) || 1))}
-            />
-          </label>
-          <label>
-            <span>Timezone (single, consistent)</span>
-            <input
-              type="text"
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              placeholder="e.g., America/Toronto"
-            />
-            </label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={addRow}>Add patient row</button>
-            <button type="button" onClick={clearTable} className="secondary">Clear all rows</button>
-            <button type="button" onClick={loadTestData} className="ghost-button">Insert sample census</button>
-          </div>
-          <p className="help-text">Keep exactly one entry per occupied room. Capture HH:MM based on the configured timezone and tag only one of the under/over 24h options.</p>
-        <div
-          className={`validation ${validationMessages.length === 0 ? 'ok' : 'error'}`}
-          role="status"
-          aria-live="polite"
-        >
-          {validationMessages.length === 0 ? (
-            <span>Validation ready: all blocking checks have passed.</span>
-          ) : (
-            <div>
-              <strong>Please resolve these blocking items:</strong>
-              <ul>
-                {validationMessages.map((msg) => (
-                  <li key={msg}>{msg}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-        {warnings.length > 0 && (
-          <div className="warning-box">
-            <ul>
-              {warnings.map((msg) => (
-                <li key={msg}>{msg}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        </div>
-      </section>
+      
 
       {dischargeHistory.length > 0 && (
         <section className="panel collapsible">
@@ -1306,144 +1636,7 @@ function App() {
         </section>
       )}
 
-      <section className="panel collapsible">
-        <div className="panel-head">
-          <h2>Active patient list</h2>
-          <p className="panel-subtext">Maintain a single row per occupied room. Assign times when the patient first required care under this nurse team.</p>
-          <button
-            type="button"
-            className="collapse-toggle"
-            aria-controls={sectionContentIds.runtimeTable}
-            aria-expanded={!isSectionCollapsed('runtimeTable')}
-            onClick={() => toggleSection('runtimeTable')}
-          >
-            {isSectionCollapsed('runtimeTable') ? 'Expand' : 'Collapse'}
-            <span className="chevron" aria-hidden="true" data-collapsed={isSectionCollapsed('runtimeTable')} />
-          </button>
-        </div>
-        <div
-          id={sectionContentIds.runtimeTable}
-          className={`panel-content ${isSectionCollapsed('runtimeTable') ? 'collapsed' : ''}`}
-          aria-hidden={isSectionCollapsed('runtimeTable')}
-        >
-          <div className="table-scroll">
-            <table className="input-table">
-              <thead>
-                <tr>
-                  <th>Room</th>
-                  <th>Time (HH:MM)</th>
-                  {labelColumns.map((col) => (
-                    <th key={col.key} title={col.description}>{col.label}</th>
-                  ))}
-                  <th>Status</th>
-                  <th aria-label="Row actions">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows
-                  .map((row, idx) => ({ row, idx }))
-                  .sort((a, b) => {
-                    const aKey = a.row.room ? canonicalRooms.indexOf(a.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
-                    const bKey = b.row.room ? canonicalRooms.indexOf(b.row.room as (typeof canonicalRooms)[number]) : canonicalRooms.length;
-                    return aKey - bKey;
-                  })
-                  .map(({ row, idx }) => {
-                  const meta = parseStateFresh ? rowMeta.get(idx) : undefined;
-                  const roomInvalid = !!meta?.room && !meta.roomOk;
-                  const timeInvalid = !!meta?.time && !meta.timeOk;
-                  const cautionText = parseStateFresh ? cautionByRow.get(idx) : undefined;
-                  return (
-                    <tr key={`row-${idx}`}>
-                      <td data-label="Room">
-                        <select
-                          value={row.room}
-                          onChange={(e) => updateRowField(idx, 'room', e.target.value)}
-                          className={roomInvalid ? 'invalid' : ''}
-                        >
-                          <option value="">Choose room...</option>
-                          {canonicalRooms
-                            .filter((roomOption) => !assignedRoomsSet.has(roomOption) || row.room === roomOption)
-                            .map((roomOption) => (
-                              <option key={roomOption} value={roomOption}>
-                                {roomOption}
-                              </option>
-                            ))}
-                        </select>
-                      </td>
-                      <td data-label="Time">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          placeholder="HH:MM"
-                          value={row.time}
-                          onChange={(e) => updateRowField(idx, 'time', e.target.value)}
-                          onBlur={(e) => handleTimeBlur(idx, e.target.value)}
-                          className={timeInvalid ? 'invalid' : ''}
-                        />
-                      </td>
-                      {labelColumns.map((col) => (
-                        <td key={`${col.key}-${idx}`} data-label={col.label} className="checkbox-cell">
-                          <label className="checkbox" title={col.description}>
-                            <span className="checkbox-caption" aria-hidden="true">{col.label}</span>
-                            <input
-                              type="checkbox"
-                              checked={row[col.key]}
-                              onChange={(e) => updateRowField(idx, col.key, e.target.checked)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  updateRowField(idx, col.key, !row[col.key]);
-                                }
-                              }}
-                            />
-                            <span className="sr-only">{col.label}</span>
-                          </label>
-                        </td>
-                      ))}
-                      <td data-label="Status">
-                        {cautionText ? <span className="status-pill warning">Add age tag</span> : <span className="status-pill ok">Ready</span>}
-                      </td>
-                      <td className="row-actions" data-label="Actions">
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => dischargeRow(idx)}
-                      >
-                        Discharge now
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={!row.under_24}
-                        onClick={() => promoteToOver24(idx)}
-                      >
-                        Promote to &gt;24h
-                      </button>
-                      <button
-                        type="button"
-                        className={`ghost ${row.discharge ? 'active' : ''}`}
-                        onClick={() => togglePrepareDischarge(idx)}
-                      >
-                        Toggle discharge prep
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost danger"
-                        onClick={() => removeRow(idx)}
-                        aria-label="Remove row"
-                      >
-                        Delete entry
-                      </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="help-text">List only current patients. Use the row actions to log discharges, promote age status, or flag a pending discharge without losing the original assignment.</p>
-        </div>
-      </section>
+      
 
       {selectedRoom && (
         <div className="room-detail-overlay" role="dialog" aria-modal="true" aria-labelledby="room-detail-title">
